@@ -3219,7 +3219,7 @@ button.cw-pill[aria-expanded="true"]{
      * 会话，也只列「装着该助手会话」的工作区。同一个目录可以被两个助手登记，所以
      * 每行的 `+` 和 🗑 都带上行所在的工作区目录，由外层按目录删。
      */
-    function Rail({ sessions, workspaces, currentId, provider, query, setQuery, fold, toggleFold, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
+    function Rail({ sessions, workspaces, currentId, provider, query, setQuery, fold, toggleFold, expandGroup, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
       const meta = providerMeta(provider);
       const scoped = sessions.filter((session) => (session.provider || 'claude') === provider);
       const otherCount = sessions.filter((session) => !session.archived && (session.provider || 'claude') !== provider).length;
@@ -3391,7 +3391,9 @@ button.cw-pill[aria-expanded="true"]{
             entry.hidden > 0 ? h('button', {
               key: 'more-' + entry.group.key,
               className: 'cw-more',
-              onClick: () => toggleFold(entry.group.key),
+              // 「展开剩余」只负责展开：从默认/折叠档直接跳到全部展开。
+              // 不能复用 toggleFold——它从默认态会走去 collapsed，正好把整组收起。
+              onClick: () => expandGroup(entry.group.key),
             }, '展开剩余 ' + entry.hidden + ' 个会话') : null,
           )),
         ),
@@ -4778,6 +4780,8 @@ button.cw-pill[aria-expanded="true"]{
           h(Rail, {
             sessions, workspaces, currentId, provider: currentProvider, query, setQuery, fold,
             toggleFold: (key) => setFold((current) => ({ ...current, [key]: current[key] === 'collapsed' ? 'open' : current[key] === 'open' ? 'fold' : 'collapsed' })),
+            // 「展开剩余 N 个会话」专用：无论当前处于默认档还是折叠档，都直接铺开全部
+            expandGroup: (key) => setFold((current) => ({ ...current, [key]: 'open' })),
             batch, selected, toggleSelect, selectAll,
             // 批量模式下点整行打钩；平时 Ctrl/⌘ 点或 Shift 点可以顺手多选并进入批量
             onToggleSelect: (id) => toggleSelect(id),
