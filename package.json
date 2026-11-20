@@ -1,0 +1,53 @@
+{
+  "name": "dsh-cli-workbench",
+  "version": "1.0.0",
+  "description": "Turns the locally installed Claude Code and Codex CLIs into a three-column GUI workbench inside DeepSeek Harness.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "claude-code",
+    "codex",
+    "workbench",
+    "gui"
+  ],
+  "license": "MIT",
+  "author": "yk1900",
+  "homepage": "https://gitcode.com/yk1900/dsh-cli-workbench",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitcode.com/yk1900/dsh-cli-workbench.git"
+  },
+  "bugs": {
+    "url": "https://gitcode.com/yk1900/dsh-cli-workbench/issues"
+  },
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.2.2-rc.3 <0.3.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "mcp-permission.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

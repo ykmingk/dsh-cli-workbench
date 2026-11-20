@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "CLI workbench",
+    "description": "Turns the locally installed Claude Code and Codex CLIs into a three-column graphical workbench: sessions, conversation, tool timeline, approvals, and a file inspector, without touching the command line.",
+    "detail": "docs/DETAIL.md"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "CLI 工作台",
+    "description": "把本机独立安装的 Claude Code 与 Codex 命令行工具翻译成三栏图形工作台：会话、对话、工具过程、审批与文件检查器，全程不用碰命令行。",
+    "detail": "docs/DETAIL.md"
+  }
+}
