@@ -22,6 +22,9 @@
     "url": "https://gitcode.com/yk1900/dsh-cli-workbench/issues"
   },
   "type": "module",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "dsh": ">=0.2.2-rc.3 <0.3.0"
   },
