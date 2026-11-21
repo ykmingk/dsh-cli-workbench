@@ -4406,7 +4406,7 @@ button.cw-pill[aria-expanded="true"]{
         } else if (action === 'openfolder') {
           // 这里原来没有 try/catch：请求失败会变成未处理的 rejection，右键菜单
           // 看起来「点了没反应」。失败必须说出来。
-          try { await api('/open', { method: 'POST', body: JSON.stringify({ target: session.cwd }) }); }
+          try { await api('/open', { method: 'POST', body: JSON.stringify({ target: session.cwd, session: session.id }) }); }
           catch (error) { showToast('打开文件夹失败：' + error.message); }
         } else if (action === 'copyid') {
           /* 复制哪一段是明说的事：工作台自己的会话 id 永远在最前，其后是 CLI 的原生

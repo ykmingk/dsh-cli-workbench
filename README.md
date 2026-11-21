@@ -109,10 +109,14 @@
 
 ```
 <数据目录>/cli-workbench/
-├── sessions.json    会话、工作区、归档状态、界面用的消息副本
-├── settings.json    新建会话的默认权限/沙箱档位、自定义模型名
-└── mcp/             Claude 审批桥运行时的临时配置
+├── sessions.json     会话、工作区、归档状态、界面用的消息副本
+├── settings.json     新建会话的默认权限 / 沙箱档位
+├── operations.log    增删操作的排查日志（只在排查时看，界面不显示）
+└── mcp/              Claude 审批桥运行时的临时配置
 ```
+
+`operations.log` 每行一条 JSON，记录启动、工作区的新增 / 移除 / 改名、会话的新建 / 删除，
+超过 256KB 自动只留最近 500 行。出问题想知道「这行怎么没了」时，直接看这个文件。
 
 `<数据目录>` 按启动方式不同，可能是 `<DSH profile 目录>`，也可能是 `~/.dsh`。
 工作台「设置 → 数据存放位置」会直接显示当前用的是哪一个。
@@ -137,6 +141,7 @@ mcp-permission.mjs    Claude 权限请求 → 工作台审批卡 的 MCP 桥
 cordis.patch.yml      bundle 行声明
 locale/*.json         插件标题与描述（zh / en）
 docs/DETAIL.md        插件市场详情页正文
+test/                 回归用例（node test/run-all.mjs）
 ```
 
 改完 `index.js` 或 `client.js` 后，**已加载的 JS 模块不会自动换**：需要在插件页把本插件卸载再装一次，或重启 DSH。改 `locale`、`docs` 这类静态资源则刷新页面即可。
@@ -148,6 +153,18 @@ http://127.0.0.1:<DSH 端口>/cli-workbench/api/status
 ```
 
 返回两个 CLI 的版本与兼容性探测结果。
+
+## 测试
+
+回归用例在 `test/`，纯 Node、无依赖、不需要启动 DSH，也不会碰你的会话数据：
+
+```bash
+node test/run-all.mjs     # 或 npm test
+```
+
+每个用例自己打印「结果：N 通过 / M 失败」，`run-all.mjs` 汇总；有任何失败时退出码为 1。
+
+用例的写法和普通单测不同：它们**从 `index.js` / `client.js` 里抽出真实源码再执行**（而不是复制一份逻辑），所以改实现时测试会跟着变，不会出现「测试过了但代码早就不是一个东西」。断言覆盖协议解析、路径边界、状态机、以及一批「本来会坏」的写法。
 
 ## 许可证
 

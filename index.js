@@ -535,6 +535,10 @@ class Workbench {
     this.deltaTimers = new Map();
     this.deltaBuffers = new Map();
     this.saveTimer = null;
+    this.dirty = false;
+    /* 实例标识：DSH 会在闲置后卸载插件、切回时重新挂载。写进日志就能区分
+       「同一次挂载内的操作」和「某个旧实例拿着过时状态覆盖文件」。 */
+    this.instanceId = idOf('wb');
     this.statusCache = { at: 0, value: null };
     this.updateCache = { at: 0, value: null };
     this.codexSandboxCache = null;
@@ -548,6 +552,7 @@ class Workbench {
     this.load();
     // 启动一行：数据目录来源、当前规模。排查「会话/工作区怎么不见了」时先看这条。
     this.logOperation('boot', {
+      instance: this.instanceId,
       dir: this.dir,
       source: this.dataDirSource,
       sessions: this.sessions.size,
@@ -562,8 +567,6 @@ class Workbench {
       claudeMode: 'manual',
       codexMode: 'workspace-write',
       codexSandboxBackend: 'auto',
-      // 用户在这个插件里自己配过的模型（只出现在模型菜单里，不改 CLI 的全局配置）
-      customModels: { claude: [], codex: [] },
     };
     try {
       if (existsSync(this.settingsFile)) {
@@ -572,35 +575,10 @@ class Workbench {
           if (PERMISSION_MODES.has(parsed.claudeMode)) defaults.claudeMode = parsed.claudeMode;
           if (SANDBOX_MODES.has(parsed.codexMode)) defaults.codexMode = parsed.codexMode;
           if (SANDBOX_BACKENDS.has(parsed.codexSandboxBackend)) defaults.codexSandboxBackend = parsed.codexSandboxBackend;
-          defaults.customModels = this.normalizeCustomModels(parsed.customModels);
         }
       }
     } catch { /* an unreadable settings file falls back to the defaults */ }
     return defaults;
-  }
-
-  /**
-   * 自定义模型只接受「能安全拼进命令行」的名字：字母、数字和常见的 `.-_:/@`，
-   * 最多 80 个字符、每种 CLI 最多 20 个。宁可在保存时挡掉，也不要在执行时
-   * 把奇怪字符拼进 `--model`。
-   */
-  normalizeCustomModels(input) {
-    const out = { claude: [], codex: [] };
-    for (const provider of ['claude', 'codex']) {
-      const list = input && Array.isArray(input[provider]) ? input[provider] : [];
-      const seen = new Set();
-      for (const raw of list) {
-        const value = typeof raw === 'string' ? raw.trim() : '';
-        if (!value || value.length > 80) continue;
-        if (!/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(value)) continue;
-        const key = value.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out[provider].push(value);
-        if (out[provider].length >= 20) break;
-      }
-    }
-    return out;
   }
 
   saveSettings() {
@@ -618,7 +596,6 @@ class Workbench {
     if (input && PERMISSION_MODES.has(input.claudeMode)) next.claudeMode = input.claudeMode;
     if (input && SANDBOX_MODES.has(input.codexMode)) next.codexMode = input.codexMode;
     if (input && SANDBOX_BACKENDS.has(input.codexSandboxBackend)) next.codexSandboxBackend = input.codexSandboxBackend;
-    if (input && input.customModels !== undefined) next.customModels = this.normalizeCustomModels(input.customModels);
     return next;
   }
 
@@ -710,6 +687,7 @@ class Workbench {
   }
 
   scheduleSave() {
+    this.dirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -719,6 +697,7 @@ class Workbench {
 
   save() {
     try {
+      this.dirty = false;
       mkdirSync(this.dir, { recursive: true });
       const sessions = [...this.sessions.values()].map((session) => {
         // 内存态与持久态必须分开：session 上挂着 _reapTimer（Timeout 对象，含循环
@@ -812,7 +791,12 @@ class Workbench {
       for (const res of set) { try { res.end(); } catch { /* ignore */ } }
     }
     this.streams.clear();
-    this.save();
+    if (this.saveTimer !== null) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    /* 只有确实有待落盘的改动才写。DSH 会在闲置后卸载插件，届时可能同时存在新实例：
+       无条件 save() 会让这个可能已经过时的实例把它那份内存状态覆盖到别人刚写好的
+       文件上（表现出来就是「刚加的工作区又没了」）。 */
+    this.logOperation('dispose', { instance: this.instanceId, dirty: Boolean(this.dirty), workspaces: this.workspaces.size });
+    if (this.dirty) this.save();
   }
 
   session(id) {
@@ -1090,6 +1074,15 @@ class Workbench {
     }
     if (route === '/rules' && method === 'POST') {
       const body = await readBody(req);
+      /* 项目级规则会落到 `<cwd>/CLAUDE.md`，所以 cwd 必须在工作台范围内。
+         用户级（user-claude / user-agents）写的是家目录，与 cwd 无关，不在这里卡。 */
+      const id = text(body && body.id || '');
+      if (!id.startsWith('user-')) {
+        const cwd = realCwd(text(body && body.cwd || ''));
+        if (!cwd || (!this.withinAnyWorkspace(cwd) && !this.knownCwd(cwd))) {
+          return json(res, 403, { error: '只能修改工作台里的项目规则' });
+        }
+      }
       return json(res, 200, await this.writeRules(body));
     }
     if (route === '/preview' && method === 'GET') {
@@ -1278,6 +1271,13 @@ class Workbench {
         return json(res, 200, { ok: true });
       }
       if (!target) return json(res, 400, { error: 'empty target' });
+      /* 只允许打开「工作台知道的路径」：已登记的工作区、某个会话的工作目录，
+         或（带 session 时）该会话作用域内的文件。
+         原来任意路径都会交给系统打开——参数虽然已经消毒，但能力本身没有边界。 */
+      const allowed = this.withinAnyWorkspace(target)
+        || (session ? Boolean(this.safePath(session, target)) : false)
+        || this.knownCwd(target);
+      if (!allowed) return json(res, 403, { error: '只能打开工作台里的路径' });
       if (!openTarget(target)) return json(res, 400, { error: '无法打开该路径' });
       return json(res, 200, { ok: true });
     }
@@ -1565,21 +1565,20 @@ class Workbench {
     return value;
   }
 
+  /**
+   * 模型选择器需要的数据，只有两项：
+   *   model   —— 本机 CLI 配置里当前用的模型（「默认」那一行右侧要写它）
+   *   aliases —— 可选项清单 [{ alias: 传给 --model 的值, model: 说明/具体模型 }]
+   * 其余字段（来源、是否别名、解析结果…）已经没有任何界面在读了，不再下发。
+   */
   models() {
-    const claude = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], custom: [] };
-    const codex = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], catalog: '', custom: [] };
-    const custom = this.normalizeCustomModels(this.settings && this.settings.customModels);
-    claude.custom = custom.claude;
-    codex.custom = custom.codex;
+    const claude = { model: '', aliases: [] };
+    const codex = { model: '', aliases: [] };
     try {
       const file = path.join(os.homedir(), '.claude', 'settings.json');
       if (existsSync(file)) {
         const parsed = JSON.parse(readFileSync(file, 'utf8'));
-        if (parsed && typeof parsed.model === 'string') {
-          claude.model = parsed.model;
-          claude.source = 'settings.model';
-          claude.from = '~/.claude/settings.json 的 model';
-        }
+        if (parsed && typeof parsed.model === 'string') claude.model = parsed.model;
         /* 别名 → 具体模型。CLI 用 env 里的 ANTHROPIC_DEFAULT_<别名>_MODEL 定义这条映射，
            这是唯一能知道「sonnet 到底是哪个模型」的地方（--help 只列名字，不给目标）。 */
         if (parsed && parsed.env && typeof parsed.env === 'object') {
@@ -1599,14 +1598,6 @@ class Workbench {
         }
         if (parsed && parsed.env && typeof parsed.env.ANTHROPIC_MODEL === 'string') {
           claude.model = parsed.env.ANTHROPIC_MODEL;
-          claude.source = 'env.ANTHROPIC_MODEL';
-          claude.from = '~/.claude/settings.json 里 env.ANTHROPIC_MODEL';
-        }
-        if (claude.model) {
-          const wanted = claude.model.trim().toLowerCase();
-          const hit = claude.aliases.find((entry) => entry.alias === wanted);
-          claude.alias = Boolean(hit) || this.isClaudeAlias(claude.model);
-          claude.landed = hit ? hit.model : (claude.alias ? this.claudeAliasTarget(claude.model) : '');
         }
       }
     } catch { /* unreadable config */ }
@@ -1616,11 +1607,7 @@ class Workbench {
       if (existsSync(file)) {
         const raw = readFileSync(file, 'utf8');
         const match = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
-        if (match) {
-          codex.model = match[1];
-          codex.source = 'model';
-          codex.from = '~/.codex/config.toml 的 model';
-        }
+        if (match) codex.model = match[1];
         /* Codex 没有 `models` 子命令，但它支持 model_catalog_json 指向一份模型目录。
            配了目录就能列出全部可选项（slug 直接喂给 --model），没配就只剩默认。 */
         const catalogMatch = raw.match(/^\s*model_catalog_json\s*=\s*["']([^"']+)["']/m);
@@ -1635,45 +1622,11 @@ class Workbench {
               .filter((entry) => !entry.visibility || entry.visibility === 'list')
               .map((entry) => ({ alias: entry.slug.trim(), model: text(entry.display_name) || '' }))
               .slice(0, 80);
-            codex.catalog = path.basename(catalogFile);
           }
         }
       }
     } catch { /* unreadable config */ }
     return { claude, codex };
-  }
-
-  /** Claude Code 的 `sonnet` / `opus` / `haiku` / `default` 是官方别名，不是具体型号。 */
-  isClaudeAlias(alias) {
-    return /^(sonnet|opus|haiku|fable|default)$/i.test(text(alias).trim());
-  }
-
-  /**
-   * Claude Code 的模型别名（sonnet / opus / haiku …）在 CLI 启动时才解析成具体型号，
-   * 这里不做网络查询，只在 `~/.claude.json` 里找同一轮启动时 CLI 自己记下的
-   * 具体型号（lastModelUsage），找不到就留空——绝不编造一个型号名。
-   * @param {string} alias 配置里写的模型名
-   * @returns {string} 具体型号，或空字符串
-   */
-  claudeAliasTarget(alias) {
-    const name = text(alias).trim().toLowerCase();
-    if (!this.isClaudeAlias(name)) return '';
-    try {
-      const file = path.join(os.homedir(), '.claude.json');
-      if (!existsSync(file)) return '';
-      const parsed = JSON.parse(readFileSync(file, 'utf8'));
-      const buckets = [];
-      if (parsed && parsed.lastModelUsage && typeof parsed.lastModelUsage === 'object') buckets.push(parsed.lastModelUsage);
-      for (const project of Object.values(parsed && parsed.projects ? parsed.projects : {})) {
-        if (project && project.lastModelUsage) buckets.push(project.lastModelUsage);
-      }
-      for (const bucket of buckets) {
-        for (const key of Object.keys(bucket || {})) {
-          if (key.toLowerCase().startsWith(name + '-') || key.toLowerCase().startsWith('claude-' + name)) return key;
-        }
-      }
-    } catch { /* ignore */ }
-    return '';
   }
 
   async updates(force) {
@@ -2835,6 +2788,25 @@ class Workbench {
       try { rootReal = realpathSync.native ? realpathSync.native(root) : realpathSync(root); } catch { rootReal = path.resolve(root); }
       const rootLower = rootReal.toLowerCase();
       if (lower === rootLower || lower.startsWith(rootLower + path.sep)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 这个路径是不是某个会话的工作目录。
+   * 工作区被移除后，未分组会话所在的目录仍然允许打开——它仍是工作台里的东西。
+   */
+  knownCwd(input) {
+    const raw = text(input);
+    if (!raw) return false;
+    let target;
+    try { target = realpathSync.native ? realpathSync.native(raw) : realpathSync(raw); } catch { return false; }
+    const lower = target.toLowerCase();
+    for (const session of this.sessions.values()) {
+      if (!session.cwd) continue;
+      let cwd;
+      try { cwd = realpathSync.native ? realpathSync.native(session.cwd) : realpathSync(session.cwd); } catch { cwd = path.resolve(session.cwd); }
+      if (String(cwd).toLowerCase() === lower) return true;
     }
     return false;
   }
