@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -546,6 +546,13 @@ class Workbench {
     try { mkdirSync(this.mcpDir, { recursive: true }); } catch { /* ignore */ }
     this.settings = this.loadSettings();
     this.load();
+    // 启动一行：数据目录来源、当前规模。排查「会话/工作区怎么不见了」时先看这条。
+    this.logOperation('boot', {
+      dir: this.dir,
+      source: this.dataDirSource,
+      sessions: this.sessions.size,
+      workspaces: this.workspaces.size,
+    });
   }
 
   /* ------------------------------------------------------- default modes */
@@ -820,16 +827,40 @@ class Workbench {
       .map((entry) => ({ cwd: entry.cwd, title: entry.title, addedAt: entry.addedAt }));
   }
 
-  ensureWorkspace(dir) {
+  ensureWorkspace(dir, titleOverride) {
     const cwd = realCwd(text(dir));
     if (!cwd) return null;
+    const wanted = titleOverride ? oneLine(String(titleOverride).trim(), 60) : '';
     const existing = this.workspaces.get(cwd.toLowerCase());
-    if (existing) return existing;
-    const entry = { cwd, title: path.basename(cwd) || cwd, addedAt: now() };
+    if (existing) {
+      // 撤销删除时会带着原名字回来：保留用户自定义的显示名
+      if (wanted && existing.title !== wanted) { existing.title = wanted; this.save(); }
+      return existing;
+    }
+    const entry = { cwd, title: wanted || path.basename(cwd) || cwd, addedAt: now() };
     this.workspaces.set(cwd.toLowerCase(), entry);
     // 用户的一次显式操作：立刻落盘，避免 debounce 窗口里崩掉丢掉工作区增删。
     this.save();
     return entry;
+  }
+
+  /**
+   * 排查用的操作日志（JSONL，落在数据目录，**不通过任何接口暴露**）。
+   *
+   * 起因：工作区/会话的增删在界面上没有痕迹，出问题只能靠猜（「这行怎么没了」）。
+   * 这里只记录改变状态的动作和时间，写失败绝不影响主流程。
+   */
+  logOperation(kind, detail) {
+    try {
+      mkdirSync(this.dir, { recursive: true });
+      const file = path.join(this.dir, 'operations.log');
+      appendFileSync(file, JSON.stringify({ at: now(), kind, ...(detail || {}) }) + '\n');
+      // 控制体积：超过 256KB 时只留最近 500 行
+      if (statSync(file).size > 256 * 1024) {
+        const lines = readFileSync(file, 'utf8').trim().split('\n');
+        writeFileSync(file, lines.slice(-500).join('\n') + '\n');
+      }
+    } catch { /* 日志失败不能影响主流程 */ }
   }
 
   /**
@@ -1083,6 +1114,22 @@ class Workbench {
     if (route === '/workspaces' && method === 'GET') {
       return json(res, 200, { workspaces: this.workspaceList() });
     }
+    if (route === '/workspaces' && method === 'POST') {
+      // 主动登记一个目录为工作区。以前只能「在那个目录里建一个会话再删掉」，
+      // 误删工作区后没有任何正经的恢复入口。
+      const body = await readBody(req);
+      const cwd = realCwd(text(body.cwd || body.path || ''));
+      if (!cwd) return json(res, 400, { error: 'cwd required' });
+      let isDir = false;
+      try { isDir = statSync(cwd).isDirectory(); } catch { isDir = false; }
+      if (!isDir) return json(res, 400, { error: '目录不存在：' + cwd });
+      const title = text(body.title || '').trim();
+      if (title.length > 60) return json(res, 400, { error: '工作区名称最长 60 个字符' });
+      const entry = this.ensureWorkspace(cwd, title);
+      if (!entry) return json(res, 400, { error: '无法登记该目录' });
+      this.logOperation('workspace.add', { cwd: entry.cwd, title: entry.title });
+      return json(res, 200, { ok: true, workspaces: this.workspaceList() });
+    }
     if (route === '/workspaces' && method === 'PATCH') {
       const body = await readBody(req);
       const cwd = realCwd(text(body.cwd || ''));
@@ -1095,13 +1142,18 @@ class Workbench {
       // 只改左栏的显示名，磁盘目录与目录里的会话都不动
       entry.title = title;
       this.save();
+      this.logOperation('workspace.rename', { cwd: entry.cwd, title });
       return json(res, 200, { ok: true, workspaces: this.workspaceList() });
     }
     if (route === '/workspaces' && method === 'DELETE') {
       const cwd = text(url.searchParams.get('cwd') || '');
       if (!cwd) return json(res, 400, { error: 'cwd required' });
+      const resolved = realCwd(cwd);
+      const known = resolved ? this.workspaces.get(resolved.toLowerCase()) : null;
       if (!this.removeWorkspace(cwd)) return json(res, 404, { error: '工作区不存在：' + cwd });
-      return json(res, 200, { ok: true, workspaces: this.workspaceList() });
+      // 记下名字：撤销时要用原显示名重建
+      this.logOperation('workspace.remove', { cwd: known ? known.cwd : resolved, title: known ? known.title : '' });
+      return json(res, 200, { ok: true, removed: known ? { cwd: known.cwd, title: known.title } : null, workspaces: this.workspaceList() });
     }
     if (route === '/sessions' && method === 'POST') {
       const body = await readBody(req);
@@ -1142,6 +1194,7 @@ class Workbench {
       this.sessions.set(session.id, session);
       this.ensureWorkspace(cwd);
       this.scheduleSave();
+      this.logOperation('session.create', { id: session.id, provider, cwd, title: session.title });
       return json(res, 200, { session: this.publicSession(session), items: [], workspaces: this.workspaceList() });
     }
     const sessionMatch = route.match(/^\/sessions\/([\w.-]+)(\/[a-z]+)?$/);
@@ -1157,6 +1210,7 @@ class Workbench {
         return json(res, 200, { session: this.publicSession(await this.updateSession(session, body)) });
       }
       if (!action && method === 'DELETE') {
+        this.logOperation('session.delete', { id: session.id, provider: session.provider, cwd: session.cwd, title: session.title });
         await this.deleteSession(session);
         return json(res, 200, { ok: true });
       }

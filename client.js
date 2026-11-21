@@ -3292,7 +3292,7 @@ button.cw-pill[aria-expanded="true"]{
      * 会话，也只列「装着该助手会话」的工作区。同一个目录可以被两个助手登记，所以
      * 每行的 `+` 和 🗑 都带上行所在的工作区目录，由外层按目录删。
      */
-    function Rail({ sessions, workspaces, registryReady, currentId, provider, query, setQuery, fold, toggleFold, expandGroup, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
+    function Rail({ sessions, workspaces, registryReady, currentId, provider, query, setQuery, fold, toggleFold, expandGroup, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onAddWorkspace, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
       const meta = providerMeta(provider);
       const scoped = sessions.filter((session) => (session.provider || 'claude') === provider);
       const otherCount = sessions.filter((session) => !session.archived && (session.provider || 'claude') !== provider).length;
@@ -3362,6 +3362,7 @@ button.cw-pill[aria-expanded="true"]{
         h('div', { className: 'cw-rail-head' },
           h('div', { className: 'cw-rail-title-row' },
             h('span', { className: 'cw-rail-title' }, meta.label + ' 会话'),
+            h('button', { className: 'cw-iconbtn', title: '把目录添加为工作区', 'aria-label': '把目录添加为工作区', onClick: onAddWorkspace }, h(Icon, { name: 'folder', size: 15 })),
             h('button', { className: 'cw-iconbtn', title: '搜索', onClick: () => { const input = document.querySelector('.cw-search input'); if (input) input.focus(); } }, h(Icon, { name: 'search', size: 15 })),
           ),
           h('label', { className: 'cw-search' },
@@ -4175,6 +4176,25 @@ button.cw-pill[aria-expanded="true"]{
         setWsDelete({ cwd: group.cwd, title: group.title, provider: topProvider, others });
       };
 
+      const restoreWorkspace = async (cwd, title) => {
+        try {
+          const result = await api('/workspaces', { method: 'POST', body: JSON.stringify({ cwd, title }) });
+          if (result.workspaces) applyWorkspaces(result.workspaces);
+          showToast('已恢复工作区');
+        } catch (error) {
+          showToast('恢复失败：' + error.message);
+        }
+      };
+
+      const addWorkspace = async () => {
+        let picked = '';
+        try {
+          picked = workspaceApi && workspaceApi.pickDirectory ? await workspaceApi.pickDirectory() : '';
+        } catch { picked = ''; }
+        if (!picked) return;
+        await restoreWorkspace(picked);
+      };
+
       const confirmDeleteWorkspace = async () => {
         if (!wsDelete || wsDeleting) return;
         setWsDeleting(true);
@@ -4190,7 +4210,12 @@ button.cw-pill[aria-expanded="true"]{
           ]);
           if (spaces && spaces.workspaces) applyWorkspaces(spaces.workspaces);
           if (list && list.sessions) setSessions(list.sessions);
-          showToast('已从工作台移除「' + wsDelete.title + '」');
+          // 删工作区不像归档可以随时再归档一次：给一条「撤销」，用原名字把它加回来。
+          const removed = wsDelete;
+          showToast('已从工作台移除「' + removed.title + '」', {
+            label: '撤销',
+            onClick: () => restoreWorkspace(removed.cwd, removed.title),
+          });
           setWsDelete(null);
         } catch (error) {
           setWsDeleteError(error.message);
@@ -4953,6 +4978,7 @@ button.cw-pill[aria-expanded="true"]{
             // 批量模式下点整行打钩；平时 Ctrl/⌘ 点或 Shift 点可以顺手多选并进入批量
             onToggleSelect: (id) => toggleSelect(id),
             onNew: () => startNew(currentProvider),
+            onAddWorkspace: addWorkspace,
             onNewIn: createInWorkspace,
             onOpen: (id, extend) => {
               if (extend) {
