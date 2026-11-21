@@ -3650,6 +3650,28 @@ button.cw-pill[aria-expanded="true"]{
       const rootRef = useRef(null);
       const scrollRef = useRef(null);
       const textareaRef = useRef(null);
+      const modelMenuRef = useRef(null);
+
+      /* 模型浮层相对模型按钮居中：按钮很小、浮层很宽（533px 起），
+         纯 CSS 的 left:50% + translateX(-50%) 会把左边顶出屏幕，
+         所以量一次实际宽度再算：先按按钮中线居中，再夹进视口左右各 12px。
+         用 layoutEffect 是为了在绘制前就摆好，不出现「先弹在左边再跳过去」。 */
+      React.useLayoutEffect(() => {
+        if (menu !== 'model') return;
+        const element = modelMenuRef.current;
+        const anchor = element && element.parentElement;
+        if (!element || !anchor) return;
+        const box = element.getBoundingClientRect();
+        const base = anchor.getBoundingClientRect();
+        const viewport = typeof window !== 'undefined' ? window.innerWidth : 0;
+        // left 是相对锚点的偏移，所以最后要减掉锚点自身的左边距
+        let left = (base.width - box.width) / 2;
+        const min = 12 - base.left;
+        const max = viewport - box.width - 12 - base.left;
+        if (left > max) left = max;
+        if (left < min) left = min;
+        element.style.left = Math.round(left) + 'px';
+      }, [menu]);
 
       /* 草稿跟着会话走，输入框高度也得跟着重算：
          否则切到短草稿会留着上一个会话的行数（空草稿还会撑着一大块）。 */
@@ -4767,6 +4789,7 @@ button.cw-pill[aria-expanded="true"]{
         return ['sonnet', 'opus', 'fable'].map((alias) => ({ alias, model: '' }));
       };
       const renderModelMenu = () => h('div', {
+        ref: modelMenuRef,
         className: 'cw-pop cw-model-pop',
         role: 'menu',
         'aria-label': '模型',
