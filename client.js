@@ -1132,7 +1132,10 @@ window.__ModuleLoader__.load({
 }
 .cw-chip:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-chip.sm{ height: 24px; padding: 0 8px; font-size: var(--cw-fs-xs); text-shadow: none; box-shadow: inset 0 0 0 .5px var(--cw-border-2); }
-.cw-model-pop{ min-width: 240px; max-width: 300px; }
+/* 模型菜单要放下「别名 + 网关里的完整模型名」，比其他浮层宽；
+   右侧的模型名不换行，超长用省略号（悬停有 title 看全名）。 */
+.cw-model-pop{ min-width: 320px; max-width: min(460px, calc(100vw - 24px)); }
+.cw-model-pop .cw-pop-item .tail{ max-width: 262px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cw-pop-sep{ height: .5px; margin: 4px 8px; background: var(--cw-border-2); }
 .cw-pop-note{ padding: 2px 12px 6px; font-size: var(--cw-fs-micro); line-height: 1.6; color: var(--cw-subtle); }
 /* 锚点容器：浮层的参照物就是被点的那个按钮本身（不是整条 dock）。
@@ -4764,12 +4767,13 @@ button.cw-pill[aria-expanded="true"]{
         h('div', { className: 'cw-pop-title' }, '模型'),
         h('button', { className: 'cw-pop-item' + (viewSession && !viewSession.model ? ' is-current' : ''), onClick: () => setModel('') },
           h(Icon, { name: 'brain' }), '默认', viewSession && !viewSession.model ? h('span', { className: 'tail' }, '当前') : null),
-        models && models[currentProvider] && models[currentProvider].model
+        /* 本机配置的模型只在与别名不重复时单独列一行：
+           配置里写 sonnet 的时候，下面别名列表已经有一条 sonnet 了，
+           再来一行「sonnet · 已解析成具体模型」就是同一个东西出现两次。 */
+        models && models[currentProvider] && models[currentProvider].model && !models[currentProvider].alias
           ? h('button', { className: 'cw-pop-item' + (viewSession && viewSession.model === models[currentProvider].model ? ' is-current' : ''), onClick: () => setModel(models[currentProvider].model) },
             h(Icon, { name: 'brain' }), models[currentProvider].model,
-            h('span', { className: 'tail' }, viewSession && viewSession.model === models[currentProvider].model
-              ? '当前'
-              : (models[currentProvider].landed ? '已解析成具体模型' : '本机配置')))
+            h('span', { className: 'tail' }, viewSession && viewSession.model === models[currentProvider].model ? '当前' : '本机配置'))
           : null,
         /* 两个 CLI 都没有「列出可用模型」的稳定接口，但 Claude 的别名映射写在
            ~/.claude/settings.json 的 env 里（ANTHROPIC_DEFAULT_<别名>_MODEL），
