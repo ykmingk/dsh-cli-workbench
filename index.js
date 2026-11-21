@@ -1566,8 +1566,8 @@ class Workbench {
   }
 
   models() {
-    const claude = { default: '', model: '', source: '', from: '', landed: '', alias: false, custom: [] };
-    const codex = { default: '', model: '', source: '', from: '', landed: '', alias: false, custom: [] };
+    const claude = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], custom: [] };
+    const codex = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], custom: [] };
     const custom = this.normalizeCustomModels(this.settings && this.settings.customModels);
     claude.custom = custom.claude;
     codex.custom = custom.codex;
@@ -1580,14 +1580,33 @@ class Workbench {
           claude.source = 'settings.model';
           claude.from = '~/.claude/settings.json 的 model';
         }
+        /* 别名 → 具体模型。CLI 用 env 里的 ANTHROPIC_DEFAULT_<别名>_MODEL 定义这条映射，
+           这是唯一能知道「sonnet 到底是哪个模型」的地方（--help 只列名字，不给目标）。 */
+        if (parsed && parsed.env && typeof parsed.env === 'object') {
+          const order = ['sonnet', 'opus', 'fable', 'haiku'];
+          const found = [];
+          for (const [key, value] of Object.entries(parsed.env)) {
+            const match = /^ANTHROPIC_DEFAULT_([A-Z0-9]+)_MODEL$/.exec(key);
+            if (!match) continue;
+            if (typeof value !== 'string' || !value.trim()) continue;
+            found.push({ alias: match[1].toLowerCase(), model: value.trim() });
+          }
+          claude.aliases = found.sort((a, b) => {
+            const ia = order.indexOf(a.alias);
+            const ib = order.indexOf(b.alias);
+            return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.alias.localeCompare(b.alias);
+          });
+        }
         if (parsed && parsed.env && typeof parsed.env.ANTHROPIC_MODEL === 'string') {
           claude.model = parsed.env.ANTHROPIC_MODEL;
           claude.source = 'env.ANTHROPIC_MODEL';
           claude.from = '~/.claude/settings.json 里 env.ANTHROPIC_MODEL';
         }
         if (claude.model) {
-          claude.alias = this.isClaudeAlias(claude.model);
-          claude.landed = claude.alias ? this.claudeAliasTarget(claude.model) : '';
+          const wanted = claude.model.trim().toLowerCase();
+          const hit = claude.aliases.find((entry) => entry.alias === wanted);
+          claude.alias = Boolean(hit) || this.isClaudeAlias(claude.model);
+          claude.landed = hit ? hit.model : (claude.alias ? this.claudeAliasTarget(claude.model) : '');
         }
       }
     } catch { /* unreadable config */ }
@@ -1608,7 +1627,7 @@ class Workbench {
 
   /** Claude Code 的 `sonnet` / `opus` / `haiku` / `default` 是官方别名，不是具体型号。 */
   isClaudeAlias(alias) {
-    return /^(sonnet|opus|haiku|default)$/i.test(text(alias).trim());
+    return /^(sonnet|opus|haiku|fable|default)$/i.test(text(alias).trim());
   }
 
   /**

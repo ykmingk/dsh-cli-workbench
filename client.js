@@ -4747,6 +4747,14 @@ button.cw-pill[aria-expanded="true"]{
       );
       /* 浮层都挂在**被点的那个按钮**上（不再锚到整条 dock）：
          锚点元素自己就是 position: relative，弹层贴着按钮上沿展开。 */
+      /* 别名清单：Host 从 ~/.claude/settings.json 的 env 里读出的「别名 → 具体模型」。
+         读不到就退回官方别名，此时只有名字、没有目标模型。 */
+      const aliasEntries = () => {
+        const info = models && models[currentProvider];
+        const list = info && Array.isArray(info.aliases) ? info.aliases : [];
+        if (list.length) return list;
+        return ['sonnet', 'opus', 'fable'].map((alias) => ({ alias, model: '' }));
+      };
       const renderModelMenu = () => h('div', {
         className: 'cw-pop cw-model-pop',
         role: 'menu',
@@ -4763,16 +4771,20 @@ button.cw-pill[aria-expanded="true"]{
               ? '当前'
               : (models[currentProvider].landed ? '已解析成具体模型' : '本机配置')))
           : null,
-        /* 两个 CLI 都没有「列出可用模型」的稳定接口（`--help` 里只给别名提示），
-           所以这里不假装有全集：只列默认、本机配置，以及 Claude 官方文档里写明的别名。
-           Codex 的模型 id 无法枚举，因此它只到「默认 / 本机配置」为止。 */
-        (currentProvider === 'claude' ? ['sonnet', 'opus', 'fable'] : []).map((name) => h('button', {
-          key: 'alias-' + name,
-          className: 'cw-pop-item' + (viewSession && viewSession.model === name ? ' is-current' : ''),
-          onClick: () => setModel(name),
+        /* 两个 CLI 都没有「列出可用模型」的稳定接口，但 Claude 的别名映射写在
+           ~/.claude/settings.json 的 env 里（ANTHROPIC_DEFAULT_<别名>_MODEL），
+           Host 已经把这份对应关系读出来了：菜单里别名在左、它指向的具体模型在右。
+           读不到映射时退回官方别名，只显示名字。 */
+        (currentProvider === 'claude' ? aliasEntries() : []).map((entry) => h('button', {
+          key: 'alias-' + entry.alias,
+          className: 'cw-pop-item' + (viewSession && viewSession.model === entry.alias ? ' is-current' : ''),
+          title: entry.model ? entry.alias + ' → ' + entry.model : entry.alias,
+          onClick: () => setModel(entry.alias),
         },
-        h(Icon, { name: 'brain' }), name,
-        h('span', { className: 'tail' }, viewSession && viewSession.model === name ? '当前' : '别名'),
+        h(Icon, { name: 'brain' }), entry.alias,
+        h('span', { className: 'tail' }, viewSession && viewSession.model === entry.alias
+          ? '当前'
+          : (entry.model || '别名')),
         )),
       );
       const otherPending = sessions.find((session) => !session.archived && session.id !== currentId && session.pending);
