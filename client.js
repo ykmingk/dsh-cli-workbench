@@ -2343,13 +2343,11 @@ button.cw-pill[aria-expanded="true"]{
           stat: 'activity', icon: 'gauge', label: activityLabel,
           text: '运行统计：' + activityLabel, detail: activityDetail,
           title: '运行统计', titleValue: counts || '',
-          note: '来自 CLI 事件流的计时。',
         }) : null,
         usageLabel ? h(StatPill, {
           stat: 'usage', icon: 'coin', label: usageLabel,
           text: 'token 用量：' + usageLabel, detail: usageDetail,
           title: 'token 用量', titleValue: fmtExact(total) + ' tokens',
-          note: 'CLI 上报的真实数字。',
         }) : null,
         contextLabel ? h(StatPill, {
           /* 上下文：有窗口大小时是进度环 + 百分比（跟 DSH 一样是块「表」），
@@ -2357,9 +2355,6 @@ button.cw-pill[aria-expanded="true"]{
           stat: 'context', icon: 'ring', label: contextLabel, ring: contextPct,
           text: '上下文占用：' + contextLabel, detail: contextDetail,
           title: '上下文占用', titleValue: contextPct !== null ? contextPct + '%' : fmtExact(contextUsed) + ' tokens',
-          note: contextPct !== null
-            ? '窗口大小由 CLI 上报。'
-            : 'CLI 未上报窗口大小，只显示已用量。',
         }) : null,
       );
     }
@@ -2386,7 +2381,7 @@ button.cw-pill[aria-expanded="true"]{
       if (session.status === 'running' && (session.turnPhase === 'spawn' || session.turnPhase === 'waiting')) {
         const label = providerMeta(session.provider).label;
         if (session.turnPhase === 'spawn') {
-          return { icon: 'terminal', spin: true, pulse: true, title: '启动 ' + label + ' 进程…', note: '进程还没起来；首次启动通常要几秒，之后同一会话会复用进程' };
+          return { icon: 'terminal', spin: true, pulse: true, title: '启动 ' + label + ' 进程…', note: '首次启动通常要几秒' };
         }
         return { icon: 'clock', spin: true, pulse: true, title: '已连接，等待首个字…', note: 'CLI 正在读取上下文并向模型发起请求' };
       }
@@ -2515,7 +2510,7 @@ button.cw-pill[aria-expanded="true"]{
           h('button', { onClick: onCopy }, h(Icon, { name: 'copy' }), '复制文件地址'),
           h('button', { onClick: onLocate }, h(Icon, { name: 'locate' }), '在文件里定位'),
         ) : null,
-        h('div', { className: 'cw-page-note' }, 'Page 标签只做诚实的本地预览，不伪造内嵌浏览器。'),
+        h('div', { className: 'cw-page-note' }, '本地页面预览（仅源码）。'),
       );
     }
 
@@ -2955,7 +2950,6 @@ button.cw-pill[aria-expanded="true"]{
               query ? h('button', { className: 'cw-chip', style: { height: '20px', padding: '0 5px' }, onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 11 })) : null,
             ) : null,
             h(ArchivedList, { sessions: archived, query, onRestore }),
-            h('div', { className: 'cw-set-note' }, '归档只从列表隐藏，转录不会被删除。'),
             archived.length ? h('div', { className: 'cw-arch-actions' },
               h('button', { style: { marginLeft: 'auto' }, onClick: onRestoreAll }, '全部取消归档'),
             ) : null,
@@ -2964,7 +2958,6 @@ button.cw-pill[aria-expanded="true"]{
                 h(Icon, { name: 'sparkles', size: 14 }),
                 '技能与计划模式',
               ),
-              h('div', { className: 'cw-set-note' }, '技能来自用户级与工作区的 skills 目录。'),
               h('div', { className: 'cw-set-note' }, '打开计划后，下一条消息只出方案、不改文件。'),
             ),
             h('div', { className: 'cw-upd-sec' },
@@ -3022,7 +3015,6 @@ button.cw-pill[aria-expanded="true"]{
                     boot.dataDirSource === 'profile' ? 'profile 目录' : '~/.dsh 回退目录')
                   : null,
               ),
-              h('div', { className: 'cw-set-note' }, '只存索引与界面状态，对话本体在 CLI 自己的记录里。'),
               boot && boot.dataDir
                 ? h('div', { className: 'cw-set-note cw-set-path' }, boot.dataDir)
                 : null,
@@ -3450,12 +3442,10 @@ button.cw-pill[aria-expanded="true"]{
           h('button', { className: 'danger', onClick: onDeleteSelected }, '删除'),
           h('button', { onClick: onExitBatch }, '退出'),
         ) : null,
-        h('div', { className: 'cw-rail-foot', title: otherCount ? (providerMeta(provider === 'codex' ? 'claude' : 'codex').label + ' 还有 ' + otherCount + ' 个会话，切到顶部另一个助手查看') : '会话可恢复' },
+        otherCount ? h('div', { className: 'cw-rail-foot', title: providerMeta(provider === 'codex' ? 'claude' : 'codex').label + ' 还有 ' + otherCount + ' 个会话，切到顶部另一个助手查看' },
           h(Icon, { name: 'shield', size: 13 }),
-          otherCount
-            ? '另有 ' + otherCount + ' 个 ' + providerMeta(provider === 'codex' ? 'claude' : 'codex').label + ' 会话，切到顶部查看'
-            : '会话可恢复',
-        ),
+          '另有 ' + otherCount + ' 个 ' + providerMeta(provider === 'codex' ? 'claude' : 'codex').label + ' 会话，切到顶部查看',
+        ) : null,
       );
     }
 
@@ -4597,7 +4587,7 @@ button.cw-pill[aria-expanded="true"]{
               || (picker.missingDirs || []).join(' / ')))
           : null,
         picker.kind === 'skill' && picker.items.some((item) => item.skill && !item.skill.hasDescription)
-          ? h('div', { className: 'cw-pop-note' }, 'SKILL.md 未写描述，不影响使用。')
+          ? h('div', { className: 'cw-pop-note' }, '不影响使用。')
           : null,
         picker.kind !== 'skill' && picker.items.length === 0 ? h('div', { className: 'cw-pop-title' }, '没有可选项') : null,
         picker.items.map((item) => h('button', {
