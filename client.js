@@ -4765,16 +4765,17 @@ button.cw-pill[aria-expanded="true"]{
         style: { bottom: 'calc(100% + 6px)', left: '0' },
       },
         h('div', { className: 'cw-pop-title' }, '模型'),
+        /* 「默认」是不覆盖 CLI 配置的选项，它到底是什么由 CLI 自己的配置决定。
+           右侧直接写当前配置里的模型——同一个模型不再另起一行。
+           否则配置写 sonnet 时会出现「默认 / sonnet / sonnet」三行说一件事。 */
         h('button', { className: 'cw-pop-item' + (viewSession && !viewSession.model ? ' is-current' : ''), onClick: () => setModel('') },
-          h(Icon, { name: 'brain' }), '默认', viewSession && !viewSession.model ? h('span', { className: 'tail' }, '当前') : null),
-        /* 本机配置的模型只在与别名不重复时单独列一行：
-           配置里写 sonnet 的时候，下面别名列表已经有一条 sonnet 了，
-           再来一行「sonnet · 已解析成具体模型」就是同一个东西出现两次。 */
-        models && models[currentProvider] && models[currentProvider].model && !models[currentProvider].alias
-          ? h('button', { className: 'cw-pop-item' + (viewSession && viewSession.model === models[currentProvider].model ? ' is-current' : ''), onClick: () => setModel(models[currentProvider].model) },
-            h(Icon, { name: 'brain' }), models[currentProvider].model,
-            h('span', { className: 'tail' }, viewSession && viewSession.model === models[currentProvider].model ? '当前' : '本机配置'))
-          : null,
+          h(Icon, { name: 'brain' }), '默认',
+          h('span', { className: 'tail' }, (() => {
+            const info = (models && models[currentProvider]) || {};
+            const name = info.model || '';
+            if (!name) return viewSession && !viewSession.model ? '当前' : null;
+            return viewSession && !viewSession.model ? name + ' · 当前' : name;
+          })())),
         /* 两个 CLI 都没有「列出可用模型」的稳定接口，但 Claude 的别名映射写在
            ~/.claude/settings.json 的 env 里（ANTHROPIC_DEFAULT_<别名>_MODEL），
            Host 已经把这份对应关系读出来了：菜单里别名在左、它指向的具体模型在右。
@@ -4786,9 +4787,11 @@ button.cw-pill[aria-expanded="true"]{
           onClick: () => setModel(entry.alias),
         },
         h(Icon, { name: 'brain' }), entry.alias,
-        h('span', { className: 'tail' }, viewSession && viewSession.model === entry.alias
+        /* 选中项只写「当前」：具体模型名可能很长（scnet/DeepSeek-V4.1-Flash-1017-Event），
+           拼上「· 当前」会被省略号截掉后半截，反而看不出是不是当前。 */
+        h('span', { className: 'tail' }, (Boolean(viewSession && viewSession.model === entry.alias)
           ? '当前'
-          : (entry.model || '别名')),
+          : (entry.model || '别名'))),
         )),
       );
       const otherPending = sessions.find((session) => !session.archived && session.id !== currentId && session.pending);
