@@ -140,7 +140,12 @@ window.__ModuleLoader__.load({
     };
     const statusOf = (session) => {
       if (!session) return { key: 'idle', label: '等待输入' };
-      if (session.status === 'running') return { key: 'running', label: '运行中' };
+      if (session.status === 'running') {
+        // 冷启动要好几秒，左栏这一格直接说清在等什么，别一律「运行中」
+        if (session.turnPhase === 'spawn') return { key: 'running', label: '启动中' };
+        if (session.turnPhase === 'waiting') return { key: 'running', label: '等响应' };
+        return { key: 'running', label: '运行中' };
+      }
       if (session.status === 'waiting') return { key: 'pending', label: '等待审批' };
       if (session.status === 'error') return { key: 'fail', label: '失败' };
       if (session.status === 'interrupted') return { key: 'fail', label: '已中断' };
@@ -844,6 +849,26 @@ window.__ModuleLoader__.load({
 .cw-step-status.error{ color: var(--cw-danger); }
 .cw-step-status.run{ color: var(--cw-running); }
 .cw-spin{ width: 12px; height: 12px; border: 1.5px solid var(--cw-running); border-top-color: transparent; border-radius: 50%; animation: cw-spin .8s linear infinite; }
+/* 等待阶段的呼吸圆点：比转圈安静，且不暗示进度（这几秒的时长本来就不可预测） */
+.cw-pulse{
+  width: 8px; height: 8px; flex: none; border-radius: 50%;
+  background: var(--cw-running); animation: cw-pulse 1.25s ease-in-out infinite;
+}
+@keyframes cw-pulse{
+  0%, 100%{ opacity: .28; transform: scale(.82); }
+  50%{ opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce){
+  .cw-pulse{ animation: none; opacity: .85; }
+}
+/* 「更早的 N 条未显示」提示条 */
+.cw-omitted{
+  display: flex; align-items: flex-start; gap: 6px; margin: 0 0 14px;
+  padding: 7px 10px; border-radius: var(--cw-radius-sm);
+  background: var(--cw-bg); box-shadow: inset 0 0 0 .5px var(--cw-border);
+  font-size: var(--cw-fs-micro); line-height: 1.55; color: var(--cw-subtle);
+}
+.cw-omitted svg{ flex: none; margin-top: 1px; }
 .cw-step-status .cw-spin{ width: 11px; height: 11px; }
 
 /* diff 摘要 */
@@ -2356,6 +2381,16 @@ button.cw-pill[aria-expanded="true"]{
         };
       }
       if (runningTool) return { icon: 'refresh', spin: true, title: runningTool.verb + ' · ' + runningTool.name, note: runningTool.target || '' };
+      /* 拉起进程 / 等首字这两个阶段，原先会落到最后的「空闲 · 没有正在执行的工具」——
+         实测冷启动到首个事件约 5 秒，那几秒里界面说着「空闲」是错的。这里如实分段：
+         阶段由 Host 的 turnPhase 给，不是猜的进度。 */
+      if (session.status === 'running' && (session.turnPhase === 'spawn' || session.turnPhase === 'waiting')) {
+        const label = providerMeta(session.provider).label;
+        if (session.turnPhase === 'spawn') {
+          return { icon: 'terminal', spin: true, pulse: true, title: '启动 ' + label + ' 进程…', note: '进程还没起来；首次启动通常要几秒，之后同一会话会复用进程' };
+        }
+        return { icon: 'clock', spin: true, pulse: true, title: '已连接，等待首个字…', note: 'CLI 正在读取上下文并向模型发起请求' };
+      }
       if (session.status === 'error') return { icon: 'alert', spin: false, title: '已停止 · ' + ((session.error && session.error.category) || '连接中断'), note: '内容与文件改动已保留，可在对话里重试' };
       if (toolCount) return { icon: 'check', spin: false, title: '已完成本轮', note: '本轮 ' + toolCount + ' 次工具调用' + (usage && usage.durationMs ? ' · 用时 ' + fmtDuration(usage.durationMs) : '') };
       return { icon: 'check', spin: false, title: '空闲', note: '没有正在执行的工具' };
@@ -2373,7 +2408,9 @@ button.cw-pill[aria-expanded="true"]{
       const lastUser = [...items].reverse().find((item) => item.kind === 'user' && item.at);
       const elapsed = lastUser && lastUser.at ? Math.max(0, Math.round((tick - lastUser.at) / 1000)) : 0;
       return h('div', { className: 'cw-runningline', role: 'status' },
-        now.spin ? h('span', { className: 'cw-spin' }) : h(Icon, { name: now.icon, size: 13 }),
+        /* pulse：等待类阶段用呼吸圆点，比转圈更「安静」，也和真实阶段的文案配套 */
+        now.pulse ? h('span', { className: 'cw-pulse', 'aria-hidden': 'true' })
+          : now.spin ? h('span', { className: 'cw-spin' }) : h(Icon, { name: now.icon, size: 13 }),
         h('span', { className: 'cw-runningline-text' }, now.title),
         now.note ? h('span', { className: 'cw-runningline-note' }, clip(now.note, 90)) : null,
         elapsed ? h('span', { className: 'cw-runningline-time' }, fmtDuration(elapsed * 1000)) : null,
@@ -4739,6 +4776,15 @@ button.cw-pill[aria-expanded="true"]{
         }
         /* 任务清单不再画在正文末尾：它现在钉在输入卡上方（TodoCard 在 .cw-dock 里），
            正文末尾那个位置留给「正在执行的工具」状态行。 */
+        /* items 只保留最近 MAX_ITEMS 条（600），超长会话会丢掉开头。
+           不能让界面看起来像是从中间凭空开始的——模型续聊时看到的是 CLI 的完整记录，
+           界面显示的并不是全部，这一点必须说出来。 */
+        if (viewSession.omittedItems > 0) {
+          nodes.unshift(h('div', { key: 'omitted', className: 'cw-omitted' },
+            h(Icon, { name: 'alert', size: 12 }),
+            h('span', null, '更早的 ' + viewSession.omittedItems + ' 条未在界面显示（对话本体仍在 CLI 记录里，模型续聊时仍能看到）'),
+          ));
+        }
         return nodes;
       };
 

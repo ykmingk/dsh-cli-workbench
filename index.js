@@ -629,6 +629,8 @@ class Workbench {
           model: text(raw.model),
           allowedTools: Array.isArray(raw.allowedTools) ? raw.allowedTools.filter((x) => typeof x === 'string') : [],
           items: Array.isArray(raw.items) ? raw.items.slice(-MAX_ITEMS) : [],
+          // 累计被裁掉的历史条数（老文件没有这个字段，按 0 处理）
+          itemBase: Number(raw.itemBase) || 0,
           usage: raw.usage && typeof raw.usage === 'object' ? raw.usage : null,
           files: Array.isArray(raw.files) ? raw.files : [],
           error: raw.error && typeof raw.error === 'object' ? raw.error : null,
@@ -832,6 +834,12 @@ class Workbench {
       usage: session.usage,
       files: session.files,
       error: session.error,
+      // 「正在干什么」的真实阶段：spawn（拉起进程）→ waiting（等首字）→ streaming / tool。
+      // 冷启动实测要 5 秒左右，没有这个字段的话界面只能笼统显示「运行中」。
+      turnPhase: session._turnPhase || null,
+      turnStartedAt: Number(session._turnStartedAt) || null,
+      // 被 MAX_ITEMS 裁掉的历史条数；0 表示界面显示的就是全部。
+      omittedItems: Number(session.itemBase) || 0,
       advisories: Array.isArray(session.advisories) ? session.advisories.slice(-8) : [],
       pending: session.pending
         ? {
@@ -857,9 +865,17 @@ class Workbench {
   }
 
   push(session, item) {
+    // 回合阶段：客户端用它区分「还在拉起 CLI」「已连上等首字」「在执行工具」。
+    // 只有真正产出内容的两种条目推进它，user/notice/error 不改状态。
+    if (item.kind === 'tool') session._turnPhase = 'tool';
+    else if (item.kind === 'assistant' || item.kind === 'thinking') session._turnPhase = 'streaming';
     session.items.push(item);
     if (session.items.length > MAX_ITEMS) {
-      session.items.splice(0, session.items.length - MAX_ITEMS);
+      const dropped = session.items.length - MAX_ITEMS;
+      session.items.splice(0, dropped);
+      // 记下累计裁掉的条数：界面要如实说「更早的 N 条没显示」，
+      // 否则长会话看起来像是凭空从中间开始的。
+      session.itemBase = (Number(session.itemBase) || 0) + dropped;
     }
     this.emit(session, { type: 'item', item });
     this.touch(session);
@@ -1710,6 +1726,7 @@ class Workbench {
     session.status = 'running';
     session._turnActive = true;
     session._turnStartedAt = now();
+    session._turnPhase = 'spawn';
     session._turnTiming = { decodeMs: 0, ttftMs: null, blockStart: null };
     const title = session.title === '新会话' || !session.title;
     if (title) session.title = oneLine(content, 36);
@@ -1763,6 +1780,7 @@ class Workbench {
     }
     if (session._turnActive) {
       session._turnActive = false;
+      session._turnPhase = null;
       session.status = 'idle';
       this.push(session, { id: idOf('notice'), kind: 'notice', text: '已停止本轮执行。', at: now() });
       this.sessionEvent(session);
@@ -1774,6 +1792,7 @@ class Workbench {
 
   failTurn(session, phase, category, detail) {
     session._turnActive = false;
+    session._turnPhase = null;
     session.status = 'error';
     session.error = { phase, category, detail: oneLine(detail, 600), at: now() };
     this.cancelApprovals(session, '本轮失败，审批取消。');
@@ -1850,6 +1869,8 @@ class Workbench {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.procs.set(session.id, child);
+    // 进程已拉起，接下来是 CLI 读上下文、请求模型——这段通常比 spawn 本身更久。
+    session._turnPhase = 'waiting';
     session._sawText = false;
     session._sawThinking = false;
     session._openText = null;
@@ -2014,6 +2035,7 @@ class Workbench {
         steps: (Number(session._turns) || 1) + (Number(session._toolSteps) || 0),
       };
       session._turnActive = false;
+      session._turnPhase = null;
       session.status = 'idle';
       session._turns = (Number(session._turns) || 0) + 1;
       this.cancelApprovals(session, '本轮已结束，未处理的审批已取消。');
@@ -2173,6 +2195,7 @@ class Workbench {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.procs.set(session.id, child);
+    session._turnPhase = 'waiting';
     session._codexTurn = { completed: false, started: now() };
     let buffer = '';
     let stderr = '';
@@ -2302,6 +2325,7 @@ class Workbench {
         steps: (Number(session._codexTurns) || 1) + (Number(session._toolSteps) || 0),
       };
       session._turnActive = false;
+      session._turnPhase = null;
       session.status = 'idle';
       session._codexTurns = (Number(session._codexTurns) || 0) + 1;
       this.sessionEvent(session);
