@@ -1135,7 +1135,13 @@ window.__ModuleLoader__.load({
 /* 模型菜单要放下「别名 + 网关里的完整模型名」，比其他浮层宽。
    注意用**双类选择器**：.cw-pop 定义在本文件更靠后的位置，单类选择器的
    min/max-width 会被它整段盖掉（.cw-picker-pop 也出于同样原因用双类）。 */
-.cw-pop.cw-model-pop{ min-width: 533px; max-width: min(740px, calc(100vw - 24px)); }
+.cw-pop.cw-model-pop{
+  min-width: 533px; max-width: min(740px, calc(100vw - 24px));
+  /* Codex 的模型目录可能有几十个型号，超过一屏就滚动，不把浮层拉成整屏高 */
+  max-height: 360px; overflow-y: auto;
+}
+/* 只有一个「默认」时（没有模型目录）不需要那么宽 */
+.cw-pop.cw-model-pop.is-narrow{ min-width: 268px; max-width: min(420px, calc(100vw - 24px)); }
 /* 右侧模型名发虚的两条主因：字号比左侧标签小一档（11→现在 13），
    颜色又是三级灰（--cw-subtle），灰底 + 灰字 + 小字叠在一起就糊。
    这里字号与左侧标签同档、颜色提到正文级，行高定死 18px 避免半像素居中。 */
@@ -4780,17 +4786,21 @@ button.cw-pill[aria-expanded="true"]{
       );
       /* 浮层都挂在**被点的那个按钮**上（不再锚到整条 dock）：
          锚点元素自己就是 position: relative，弹层贴着按钮上沿展开。 */
-      /* 别名清单：Host 从 ~/.claude/settings.json 的 env 里读出的「别名 → 具体模型」。
-         读不到就退回官方别名，此时只有名字、没有目标模型。 */
+      /* 可选模型清单由 Host 提供：
+         - Claude：从 settings.json 的 env 读「别名 → 具体模型」；
+         - Codex：从 config.toml 的 model_catalog_json 读模型目录（slug → 显示名）。
+         读不到时 Claude 退回官方别名，Codex 只剩「默认」。 */
       const aliasEntries = () => {
         const info = models && models[currentProvider];
         const list = info && Array.isArray(info.aliases) ? info.aliases : [];
         if (list.length) return list;
-        return ['sonnet', 'opus', 'fable'].map((alias) => ({ alias, model: '' }));
+        return currentProvider === 'claude'
+          ? ['sonnet', 'opus', 'fable'].map((alias) => ({ alias, model: '' }))
+          : [];
       };
       const renderModelMenu = () => h('div', {
         ref: modelMenuRef,
-        className: 'cw-pop cw-model-pop',
+        className: 'cw-pop cw-model-pop' + (aliasEntries().length ? '' : ' is-narrow'),
         role: 'menu',
         'aria-label': '模型',
         style: { bottom: 'calc(100% + 6px)', left: '0' },
@@ -4811,7 +4821,7 @@ button.cw-pill[aria-expanded="true"]{
            ~/.claude/settings.json 的 env 里（ANTHROPIC_DEFAULT_<别名>_MODEL），
            Host 已经把这份对应关系读出来了：菜单里别名在左、它指向的具体模型在右。
            读不到映射时退回官方别名，只显示名字。 */
-        (currentProvider === 'claude' ? aliasEntries() : []).map((entry) => h('button', {
+        (aliasEntries()).map((entry) => h('button', {
           key: 'alias-' + entry.alias,
           className: 'cw-pop-item' + (viewSession && viewSession.model === entry.alias ? ' is-current' : ''),
           title: entry.model ? entry.alias + ' → ' + entry.model : entry.alias,

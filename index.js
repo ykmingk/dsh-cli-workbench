@@ -1567,7 +1567,7 @@ class Workbench {
 
   models() {
     const claude = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], custom: [] };
-    const codex = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], custom: [] };
+    const codex = { default: '', model: '', source: '', from: '', landed: '', alias: false, aliases: [], catalog: '', custom: [] };
     const custom = this.normalizeCustomModels(this.settings && this.settings.customModels);
     claude.custom = custom.claude;
     codex.custom = custom.codex;
@@ -1611,7 +1611,8 @@ class Workbench {
       }
     } catch { /* unreadable config */ }
     try {
-      const file = path.join(os.homedir(), '.codex', 'config.toml');
+      const dir = path.join(os.homedir(), '.codex');
+      const file = path.join(dir, 'config.toml');
       if (existsSync(file)) {
         const raw = readFileSync(file, 'utf8');
         const match = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
@@ -1619,6 +1620,23 @@ class Workbench {
           codex.model = match[1];
           codex.source = 'model';
           codex.from = '~/.codex/config.toml 的 model';
+        }
+        /* Codex 没有 `models` 子命令，但它支持 model_catalog_json 指向一份模型目录。
+           配了目录就能列出全部可选项（slug 直接喂给 --model），没配就只剩默认。 */
+        const catalogMatch = raw.match(/^\s*model_catalog_json\s*=\s*["']([^"']+)["']/m);
+        if (catalogMatch && catalogMatch[1].trim()) {
+          const raw2 = catalogMatch[1].trim();
+          const catalogFile = path.isAbsolute(raw2) ? raw2 : path.join(dir, raw2);
+          if (existsSync(catalogFile)) {
+            const catalog = JSON.parse(readFileSync(catalogFile, 'utf8'));
+            const list = Array.isArray(catalog && catalog.models) ? catalog.models : [];
+            codex.aliases = list
+              .filter((entry) => entry && typeof entry.slug === 'string' && entry.slug.trim())
+              .filter((entry) => !entry.visibility || entry.visibility === 'list')
+              .map((entry) => ({ alias: entry.slug.trim(), model: text(entry.display_name) || '' }))
+              .slice(0, 80);
+            codex.catalog = path.basename(catalogFile);
+          }
         }
       }
     } catch { /* unreadable config */ }
