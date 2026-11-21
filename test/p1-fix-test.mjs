@@ -5,11 +5,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readServer } from './source.mjs';
 
-const INDEX = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'index.js');
+
 const CLIENT = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'client.js');
 
-const srcIndex = fs.readFileSync(INDEX, 'utf8');
+const srcIndex = readServer();
 const srcClient = fs.readFileSync(CLIENT, 'utf8');
 
 const extract = (source, signature) => {

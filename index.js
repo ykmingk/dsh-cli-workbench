@@ -14,16 +14,16 @@ import {
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as claudeAdapter from './lib/claude.js';
+import * as codexAdapter from './lib/codex.js';
+import { contentToText, toolTarget, toolCategory, toolVerb, diffOf, humanImpact, isAdvisoryMessage, codexFailureText } from './lib/format.js';
+import { now, idOf, text, clipText, oneLine, realCwd, run, killTree, PERMISSION_MODES, SANDBOX_MODES, SANDBOX_BACKENDS, MAX_ITEMS, API, json } from './lib/util.js';
 
-const API = '/cli-workbench/api';
 const MCP_SCRIPT = fileURLToPath(new URL('./mcp-permission.mjs', import.meta.url));
 const PROVIDERS = {
   claude: { label: 'Claude Code', pkg: '@anthropic-ai/claude-code' },
   codex: { label: 'Codex', pkg: '@openai/codex' },
 };
-const PERMISSION_MODES = new Set(['manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
-const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'bypass']);
-const SANDBOX_BACKENDS = new Set(['auto', 'unelevated', 'elevated']);
 const COMPAT_CACHE_MS = 10 * 60 * 1000;
 
 /**
@@ -68,21 +68,17 @@ const CLI_CAPABILITIES = {
     ],
   },
 };
-const MAX_ITEMS = 600;
 const APPROVAL_TIMEOUT = 5 * 60 * 1000;
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out', '.next', '.turbo', 'target', '.venv', 'venv',
   '__pycache__', '.idea', '.vscode', 'coverage', '.cache',
 ]);
 
-const now = () => Date.now();
-const idOf = (prefix) => prefix + '_' + now().toString(36) + randomBytes(3).toString('hex');
-const text = (value) => (typeof value === 'string' ? value : value == null ? '' : String(value));
+
+
+
 /** 截断到 n 个字符，用于技能描述这种会塞进下拉项的文本。 */
-const clipText = (value, n) => {
-  const flat = text(value).replace(/\s+/g, ' ').trim();
-  return flat.length > n ? flat.slice(0, n - 1) + '…' : flat;
-};
+;
 
 /**
  * 二进制扩展名：这些文件永远不做文本预览。之前只靠「内容里有 0x00」判断，
@@ -121,124 +117,27 @@ function langOf(ext) {
 }
 
 /** 把 Codex 工具失败的结构化 error 转成可读原文（message / 其它字段 / 兜底 JSON） */
-function codexFailureText(error) {
-  if (!error) return '';
-  if (typeof error === 'string') return error.trim();
-  if (typeof error.message === 'string' && error.message.trim()) return error.message.trim();
-  try { return JSON.stringify(error); } catch { return String(error); }
-}
+
 
 /**
  * Codex 的「提醒类」输出：实验性开关、更新提示、路径建议这类，不是本轮失败。
  * 判据只在措辞上——认清它们是提示、不是错误；认不出来的一律当错误显示，不吞。
  */
-function isAdvisoryMessage(message) {
-  const value = String(message || '').trim();
-  if (!value) return false;
-  return /^Under-development features enabled/i.test(value)
-    || /suppress_unstable_features_warning/i.test(value)
-    || /^Tip:\s/i.test(value);
-}
 
-function contentToText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (typeof part === 'string') return part;
-      if (part && typeof part.text === 'string') return part.text;
-      if (part && typeof part.content === 'string') return part.content;
-      return '';
-    }).filter(Boolean).join('\n');
-  }
-  if (content && typeof content === 'object') {
-    if (typeof content.text === 'string') return content.text;
-    return JSON.stringify(content);
-  }
-  return '';
-}
 
-function oneLine(value, max = 120) {
-  const flat = text(value).replace(/\s+/g, ' ').trim();
-  return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
-}
 
-function toolTarget(name, input) {
-  if (!input || typeof input !== 'object') return '';
-  switch (name) {
-    case 'Read': case 'Write': case 'Edit': case 'MultiEdit': case 'NotebookEdit':
-      return text(input.file_path || input.path);
-    case 'Bash': case 'shell': case 'exec_command':
-      return oneLine(input.command || input.cmd, 200);
-    case 'Grep': return oneLine(input.pattern, 80) + (input.path ? ' · ' + oneLine(input.path, 80) : '');
-    case 'Glob': return oneLine(input.pattern, 120);
-    case 'WebFetch': return oneLine(input.url, 160);
-    case 'WebSearch': return oneLine(input.query, 160);
-    case 'Task': return oneLine(input.description || input.prompt, 160);
-    default: return oneLine(input.file_path || input.path || input.command || input.pattern || '', 160);
-  }
-}
 
-function toolCategory(name) {
-  if (name === 'Bash' || name === 'shell' || name === 'exec_command') return 'terminal';
-  if (name === 'Read' || name === 'NotebookEdit') return 'file';
-  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') return 'edit';
-  if (name === 'Grep' || name === 'Glob') return 'search';
-  if (name === 'WebFetch' || name === 'WebSearch') return 'globe';
-  if (name === 'Task') return 'layers';
-  if (name === 'TodoWrite') return 'task';
-  return 'wrench';
-}
 
-function toolVerb(name) {
-  const map = {
-    Read: '读取', Write: '写入', Edit: '改写', MultiEdit: '改写', NotebookEdit: '改写',
-    Bash: '命令', Grep: '定位', Glob: '查找', WebFetch: '联网', WebSearch: '搜索',
-    Task: '子任务', TodoWrite: '计划',
-  };
-  return map[name] || name;
-}
 
-function diffOf(name, input) {
-  const out = [];
-  let target = '';
-  if (!input || typeof input !== 'object') return null;
-  if (name === 'Edit' && typeof input.old_string === 'string') {
-    target = text(input.file_path);
-    for (const line of input.old_string.split('\n')) out.push({ t: 'del', line });
-    for (const line of text(input.new_string).split('\n')) out.push({ t: 'add', line });
-  } else if (name === 'Write' && typeof input.content === 'string') {
-    target = text(input.file_path);
-    for (const line of input.content.split('\n')) out.push({ t: 'add', line });
-  } else if (name === 'MultiEdit' && Array.isArray(input.edits)) {
-    target = text(input.file_path);
-    for (const edit of input.edits) {
-      if (!edit || typeof edit !== 'object') continue;
-      for (const line of text(edit.old_string).split('\n')) out.push({ t: 'del', line });
-      for (const line of text(edit.new_string).split('\n')) out.push({ t: 'add', line });
-    }
-  } else {
-    return null;
-  }
-  let added = 0;
-  let removed = 0;
-  for (const row of out) {
-    if (row.t === 'add') added += 1;
-    else removed += 1;
-  }
-  const lines = out.length > 220 ? out.slice(0, 220) : out;
-  return { path: target, added, removed, lines };
-}
 
-function humanImpact(name, input) {
-  const target = toolTarget(name, input);
-  if (name === 'Bash') return '将在工作目录中执行这条 shell 命令，可能读写文件或启动进程。';
-  if (name === 'Edit' || name === 'MultiEdit') return '将改写 ' + (target || '目标文件') + '，旧内容会被新内容替换。';
-  if (name === 'Write') return '将写入或覆盖 ' + (target || '目标文件') + '。';
-  if (name === 'Read') return '只读取 ' + (target || '目标文件') + '，不修改内容。';
-  if (name === 'WebFetch' || name === 'WebSearch') return '将访问网络获取外部内容。';
-  if (name === 'Task') return '将启动一个子任务代理。';
-  return '将调用工具 ' + name + (target ? ' 操作 ' + target : '') + '。';
-}
+
+
+
+
+
+
+
+
 
 function parseVersion(output) {
   const match = text(output).match(/\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?/);
@@ -269,37 +168,11 @@ function npmError(result) {
  * ("cannot enforce split writable root sets"). Normalizing once at session creation
  * keeps the sandbox, the file tree, and the preview on one spelling.
  */
-function realCwd(dir) {
-  try { return realpathSync.native(dir); } catch { return dir; }
-}
 
-function run(command) {
-  return new Promise((resolve) => {
-    const windows = process.platform === 'win32';
-    const child = windows
-      ? spawn('cmd.exe', ['/d', '/s', '/c', command], { windowsHide: true, env: process.env })
-      : spawn('sh', ['-c', command], { env: process.env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (error) => resolve({ code: -1, stdout, stderr: stderr + String(error) }));
-    child.on('close', (code) => resolve({ code: code == null ? -1 : code, stdout, stderr }));
-  });
-}
 
-function killTree(child) {
-  if (!child || child.exitCode != null || !child.pid) return;
-  try {
-    if (process.platform === 'win32') {
-      spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-    } else {
-      child.kill('SIGTERM');
-    }
-  } catch {
-    try { child.kill(); } catch { /* already gone */ }
-  }
-}
+
+
+
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -328,16 +201,6 @@ function readBody(req) {
     });
     req.on('error', (error) => { if (!settled) { settled = true; reject(error); } });
   });
-}
-
-function json(res, status, value) {
-  const payload = JSON.stringify(value);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(payload),
-  });
-  res.end(payload);
 }
 
 /**
@@ -556,6 +419,8 @@ class Workbench {
     /* 实例标识：DSH 会在闲置后卸载插件、切回时重新挂载。写进日志就能区分
        「同一次挂载内的操作」和「某个旧实例拿着过时状态覆盖文件」。 */
     this.instanceId = idOf('wb');
+    // MCP 桥脚本的绝对路径：以 index.js 为基准算出来的，适配器通过实例取用
+    this.mcpScript = MCP_SCRIPT;
     this.statusCache = { at: 0, value: null };
     this.updateCache = { at: 0, value: null };
     this.codexSandboxCache = null;
@@ -799,6 +664,17 @@ class Workbench {
       this.saveError = String(error && error.message ? error.message : error);
     }
   }
+
+  /* ------------------------------------------- 协议适配器（实现见 lib/claude.js / lib/codex.js）
+     方法体已搬走，这里只留一层委托：调用点、日志、栈回溯都还在原位置。 */
+  ensureClaude(session) { return claudeAdapter.ensureClaude(this, session); }
+  handleClaude(session, event) { return claudeAdapter.handleClaude(this, session, event); }
+  handleStreamEvent(session, streamEvent) { return claudeAdapter.handleStreamEvent(this, session, streamEvent); }
+  patchOpenStreaming(session) { return claudeAdapter.patchOpenStreaming(this, session); }
+  startCodex(session, content, seq) { return codexAdapter.startCodex(this, session, content, seq); }
+  handleCodex(session, event) { return codexAdapter.handleCodex(this, session, event); }
+  handleCodexItem(session, item, completed) { return codexAdapter.handleCodexItem(this, session, item, completed); }
+  codexRolloutContext(threadId) { return codexAdapter.codexRolloutContext(this, threadId); }
 
   /* ------------------------------------------------------------- lifecycle */
 
@@ -2072,315 +1948,13 @@ class Workbench {
 
   /* ---------------------------------------------------------------- claude */
 
-  ensureClaude(session) {
-    const existing = this.procs.get(session.id);
-    if (existing && existing.exitCode == null) return existing;
-    const token = randomBytes(16).toString('hex');
-    session._mcpToken = token;
-    const configPath = path.join(this.mcpDir, session.id + '.mcp.json');
-    const origin = this.ctx.webServer.getOrigin();
-    const config = {
-      mcpServers: {
-        cliworkbench: {
-          command: process.execPath,
-          args: [MCP_SCRIPT],
-          env: {
-            ELECTRON_RUN_AS_NODE: '1',
-            CLI_WB_ENDPOINT: origin + API + '/permission',
-            CLI_WB_TOKEN: token,
-            CLI_WB_SESSION: session.id,
-          },
-        },
-      },
-    };
-    writeFileSync(configPath, JSON.stringify(config, null, 2));
-    const mode = PERMISSION_MODES.has(session.permissionMode) ? session.permissionMode : 'manual';
-    const parts = [
-      'claude -p',
-      '--input-format stream-json',
-      '--output-format stream-json',
-      '--verbose',
-      '--include-partial-messages',
-      '--permission-mode ' + mode,
-      '--permission-prompts host',
-      '--mcp-config ' + configPath,
-      '--permission-prompt-tool mcp__cliworkbench__approval_prompt',
-    ];
-    if (session.claudeSessionId) parts.push('--resume ' + session.claudeSessionId);
-    if (session.model) parts.push('--model ' + session.model.trim().split(/\s+/)[0]);
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', parts.join(' ')], {
-      cwd: realCwd(session.cwd),
-      windowsHide: true,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    this.procs.set(session.id, child);
-    // 进程已拉起，接下来是 CLI 读上下文、请求模型——这段通常比 spawn 本身更久。
-    session._turnPhase = 'waiting';
-    session._sawText = false;
-    session._sawThinking = false;
-    session._openText = null;
-    session._openThink = null;
-    let buffer = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      let index;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index).trim();
-        buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        let event;
-        try { event = JSON.parse(line); } catch { continue; }
-        try { this.handleClaude(session, event); } catch { /* one malformed event must not kill the turn */ }
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
-      if (stderr.length > 8000) stderr = stderr.slice(-8000);
-    });
-    child.on('error', (error) => {
-      this.procs.delete(session.id);
-      this.failTurn(session, '启动', '无法启动 claude', String(error));
-    });
-    // 进程在「写入瞬间」退出时，往 stdin 写会先同步抛错、再异步发出 EPIPE/EOF。
-    // 异步那半没有监听就是 uncaughtException —— Host 跑在 DSH 宿主进程里，等于整个
-    // 应用崩溃。兜住它，让它走正常的回合失败路径。
-    child.stdin.on('error', (error) => {
-      if (this.procs.get(session.id) === child) this.procs.delete(session.id);
-      if (session._turnActive) {
-        this.failTurn(session, '工具执行', 'CLI 进程已退出，消息未送达', String(error));
-      }
-    });
-    child.on('close', (code) => {
-      if (this.procs.get(session.id) === child) this.procs.delete(session.id);
-      if (session._turnActive) {
-        const detail = stderr.trim() || ('claude 进程退出，退出码 ' + code);
-        this.failTurn(session, '工具执行', '进程异常退出（code ' + code + '）', detail);
-      }
-    });
-    return child;
-  }
 
-  handleClaude(session, event) {
-    const type = event.type;
-    if (type === 'system') {
-      if (event.subtype === 'init') {
-        session.claudeSessionId = event.session_id || session.claudeSessionId;
-        if (event.model && !session.model) session.model = event.model;
-        this.sessionEvent(session);
-        this.scheduleSave();
-      } else if (event.subtype === 'thinking_tokens') {
-        // 这个计数据历史遗留，两端都没有人读；留着一个每事件广播的活字段只会误导。
-      } else if (event.subtype === 'error') {
-        this.push(session, {
-          id: idOf('err'), kind: 'error', phase: 'CLI', category: 'CLI 报告错误',
-          detail: text(event.error || event.message), at: now(),
-        });
-      }
-      return;
-    }
-    if (type === 'stream_event') {
-      this.handleStreamEvent(session, event.event || {});
-      return;
-    }
-    if (type === 'assistant') {
-      const message = event.message || {};
-      if (message.model) session.model = message.model;
-      const blocks = Array.isArray(message.content) ? message.content : [];
-      for (const block of blocks) {
-        if (!block || typeof block !== 'object') continue;
-        if (block.type === 'text' && typeof block.text === 'string') {
-          const openId = session._textIds && session._textIds.shift();
-          if (openId) {
-            this.patch(session, openId, { text: block.text, streaming: false });
-          } else {
-            this.push(session, {
-              id: idOf('asst'), kind: 'assistant', text: block.text, at: now(), streaming: false,
-            });
-          }
-        } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
-          const duration = Number(event.thinking_duration_ms) || 0;
-          const openId = session._thinkIds && session._thinkIds.shift();
-          if (openId) {
-            this.patch(session, openId, { text: block.thinking, streaming: false, durationMs: duration });
-          } else {
-            this.push(session, {
-              id: idOf('think'), kind: 'thinking', text: block.thinking, durationMs: duration,
-              at: now(), streaming: false,
-            });
-          }
-        } else if (block.type === 'tool_use') {
-          const item = {
-            id: idOf('tool'),
-            kind: 'tool',
-            toolId: block.id,
-            name: block.name || 'Tool',
-            input: block.input && typeof block.input === 'object' ? block.input : {},
-            target: toolTarget(block.name, block.input),
-            category: toolCategory(block.name),
-            verb: toolVerb(block.name),
-            status: 'running',
-            startedAt: now(),
-            at: now(),
-            diff: diffOf(block.name, block.input),
-            output: '',
-            isError: false,
-          };
-          this.push(session, item);
-          session._toolSteps = (Number(session._toolSteps) || 0) + 1;
-          if (item.diff && item.diff.path) this.noteFile(session, item.diff);
-        }
-      }
-      return;
-    }
-    if (type === 'user') {
-      const content = event.message && event.message.content;
-      const metas = Array.isArray(event.tool_result_meta) ? event.tool_result_meta : [];
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (!block || block.type !== 'tool_result') continue;
-          const target = [...session.items].reverse().find((item) => item.kind === 'tool' && item.toolId === block.tool_use_id);
-          if (!target) continue;
-          const meta = metas.find((entry) => entry && entry.id === block.tool_use_id) || metas[0] || null;
-          const decision = meta && meta.permission_decision ? meta.permission_decision : null;
-          this.patch(session, target.id, {
-            status: block.is_error ? 'error' : 'done',
-            isError: Boolean(block.is_error),
-            output: contentToText(block.content),
-            endedAt: now(),
-            decision: decision ? { decision: decision.decision, source: decision.source, reason: decision.reason_type || '' } : null,
-          });
-        }
-      }
-      return;
-    }
-    if (type === 'result') {
-      const usage = event.usage || {};
-      const modelUsage = event.modelUsage || {};
-      const modelKey = Object.keys(modelUsage)[0] || session.model;
-      const contextWindow = modelKey && modelUsage[modelKey] ? Number(modelUsage[modelKey].contextWindow) || 0 : 0;
-      const turn = session._turnTiming || null;
-      session.usage = {
-        input: Number(usage.input_tokens) || 0,
-        output: Number(usage.output_tokens) || 0,
-        cacheRead: Number(usage.cache_read_input_tokens) || 0,
-        thinking: Number(usage.output_tokens_details && usage.output_tokens_details.thinking_tokens) || 0,
-        costUsd: typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null,
-        durationMs: Number(event.duration_ms) || 0,
-        contextWindow,
-        contextUsed: (Number(usage.input_tokens) || 0) + (Number(usage.cache_read_input_tokens) || 0),
-        model: modelKey || session.model,
-        // Real decode wall time and first-token latency, measured from the stream
-        // itself: tokens/second is only shown when this exists, never guessed.
-        decodeMs: turn ? Math.round(turn.decodeMs) : 0,
-        ttftMs: turn && turn.ttftMs != null ? Math.round(turn.ttftMs) : null,
-        // 本轮序号 = 已完成的轮数 + 1（原来的写法在自增之前取值，第二轮起永远少 1）
-        turns: (Number(session._turns) || 0) + 1,
-        steps: Number(session._turnSteps) || 0,
-      };
-      session._turnActive = false;
-      session._turnPhase = null;
-      session.status = 'idle';
-      session._turns = (Number(session._turns) || 0) + 1;
-      this.cancelApprovals(session, '本轮已结束，未处理的审批已取消。');
-      this.patchOpenStreaming(session);
-      this.sessionEvent(session);
-      this.scheduleReap(session);
-      this.emit(session, { type: 'turn-end' });
-      return;
-    }
-    if (type === 'control_request') {
-      return;
-    }
-  }
 
-  patchOpenStreaming(session) {
-    if (session._openText) this.patch(session, session._openText, { streaming: false });
-    if (session._openThink) this.patch(session, session._openThink, { streaming: false });
-    session._openText = null;
-    session._openThink = null;
-  }
 
-  handleStreamEvent(session, streamEvent) {
-    const type = streamEvent.type;
-    // Decode timing: accumulate only the spans where the model is actually
-    // emitting (thinking + text blocks), so tokens/second excludes tool waits.
-    if (!session._turnTiming) session._turnTiming = { decodeMs: 0, ttftMs: null, blockStart: null };
-    const timing = session._turnTiming;
-    if (type === 'message_start') {
-      session._sawText = false;
-      session._sawThinking = false;
-      session._openText = null;
-      session._openThink = null;
-      session._textIds = [];
-      session._thinkIds = [];
-      // No TTFT: the CLI buffers message_start and the first content block into the
-      // same tick, so any figure derived from them would be a fake 0ms.
-      return;
-    }
-    if (type === 'content_block_start') {
-      const block = streamEvent.content_block || {};
-      timing.blockStart = Date.now();
-      if (block.type === 'text') {
-        session._sawText = true;
-        const item = {
-          id: idOf('asst'), kind: 'assistant', text: '', at: now(), streaming: true,
-        };
-        session._openText = item.id;
-        session._textIds.push(item.id);
-        this.push(session, item);
-      } else if (block.type === 'thinking') {
-        session._sawThinking = true;
-        const item = {
-          id: idOf('think'), kind: 'thinking', text: '', at: now(), streaming: true, durationMs: 0,
-        };
-        session._openThink = item.id;
-        session._thinkIds.push(item.id);
-        this.push(session, item);
-      }
-      return;
-    }
-    if (type === 'content_block_delta') {
-      const delta = streamEvent.delta || {};
-      if (delta.type === 'text_delta' && typeof delta.text === 'string') {
-        if (!session._openText) {
-          const item = { id: idOf('asst'), kind: 'assistant', text: '', at: now(), streaming: true };
-          session._openText = item.id;
-          this.push(session, item);
-        }
-        const item = session.items.find((entry) => entry.id === session._openText);
-        if (item) { item.text += delta.text; this.touch(session); }
-        this.queueDelta(session, session._openText, delta.text);
-      } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        if (!session._openThink) {
-          const item = { id: idOf('think'), kind: 'thinking', text: '', at: now(), streaming: true, durationMs: 0 };
-          session._openThink = item.id;
-          this.push(session, item);
-        }
-        const item = session.items.find((entry) => entry.id === session._openThink);
-        if (item) { item.text += delta.thinking; this.touch(session); }
-        this.queueDelta(session, session._openThink, delta.thinking);
-      }
-      return;
-    }
-    if (type === 'content_block_stop') {
-      if (timing.blockStart != null) {
-        timing.decodeMs += Math.max(0, Date.now() - timing.blockStart);
-        timing.blockStart = null;
-      }
-      if (session._openText) {
-        this.patch(session, session._openText, { streaming: false });
-        session._openText = null;
-      }
-      if (session._openThink) {
-        const item = session.items.find((entry) => entry.id === session._openThink);
-        const duration = item ? now() - (item.at || now()) : 0;
-        this.patch(session, session._openThink, { streaming: false, durationMs: duration });
-        session._openThink = null;
-      }
-    }
-  }
+
+
+
+
 
   noteFile(session, diff) {
     const existing = session.files.find((file) => file.path === diff.path);
@@ -2397,89 +1971,7 @@ class Workbench {
 
   /* ----------------------------------------------------------------- codex */
 
-  async startCodex(session, content, seq) {
-    const thread = session.codexThreadId;
-    const sandbox = SANDBOX_MODES.has(session.sandboxMode) ? session.sandboxMode : 'workspace-write';
-    // Codex 0.170 defaults the Windows backend to `disabled`, which makes every
-    // sandboxed tier refuse to start commands. The probe decides whether a
-    // `-c windows.sandbox="..."` override is needed on this machine.
-    let backendOverride = null;
-    if (sandbox !== 'bypass') {
-      const state = await this.codexSandbox().catch(() => null);
-      backendOverride = state && state.override ? state.override : null;
-    }
-    if (!session._turnActive || seq !== session._turnSeq) return; // stopped or superseded meanwhile
-    const parts = [];
-    if (thread) {
-      parts.push('codex exec resume ' + thread);
-    } else {
-      parts.push('codex exec');
-    }
-    parts.push('--json', '--skip-git-repo-check');
-    if (!thread) parts.push('--color never');
-    // `codex exec` is non-interactive: it has no channel to ask the user, so pin the
-    // approval policy. Otherwise a user config with on-request would hang forever.
-    parts.push('-c approval_policy="never"');
-    if (backendOverride) parts.push('-c windows.sandbox="' + backendOverride + '"');
-    if (sandbox === 'bypass') {
-      // The UI label is Codex's own「完全访问」= danger-full-access, not the blunter
-      // --dangerously-bypass flag: keep the sandbox wrapper, drop its restrictions.
-      parts.push(thread ? '-c sandbox_mode="danger-full-access"' : '--sandbox danger-full-access');
-    } else if (thread) {
-      parts.push('-c sandbox_mode=' + sandbox);
-    } else {
-      parts.push('--sandbox ' + sandbox);
-    }
-    if (session.model) parts.push('--model ' + session.model.trim().split(/\s+/)[0]);
-    parts.push('-');
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', parts.join(' ')], {
-      cwd: realCwd(session.cwd),
-      windowsHide: true,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    this.procs.set(session.id, child);
-    session._turnPhase = 'waiting';
-    session._codexTurn = { completed: false, started: now() };
-    let buffer = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      let index;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index).trim();
-        buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        let event;
-        try { event = JSON.parse(line); } catch { continue; }
-        try { this.handleCodex(session, event); } catch { /* ignore */ }
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
-      if (stderr.length > 8000) stderr = stderr.slice(-8000);
-    });
-    child.on('error', (error) => {
-      this.procs.delete(session.id);
-      this.failTurn(session, '启动', '无法启动 codex', String(error));
-    });
-    child.on('close', (code) => {
-      if (this.procs.get(session.id) === child) this.procs.delete(session.id);
-      if (session._turnActive && seq === session._turnSeq) {
-        const sandboxHint = /CreateProcessAsUserW|CreateProcessWithLogonW|sandbox backend|blocked by policy/i.test(stderr)
-          ? '\n\n提示：这类错误通常来自 Codex 的 Windows 沙箱后端未能启动。工作台会自动探测并追加 '
-            + '-c windows.sandbox="unelevated"；如果仍失败，请改用「完全访问」，或在 Codex 配置 / 系统策略里启用沙箱。'
-          : '';
-        const detail = (stderr.trim() || ('codex 进程退出，退出码 ' + code)) + sandboxHint;
-        this.failTurn(session, '工具执行', '进程异常退出（code ' + code + '）', detail);
-      }
-    });
-    try {
-      child.stdin.end(content);
-    } catch (error) {
-      this.failTurn(session, '输入', '无法写入 codex 输入', String(error));
-    }
-  }
+
 
   /**
    * Codex 的上下文窗口只出现在它自己的 rollout 记录里。
@@ -2493,223 +1985,11 @@ class Workbench {
    * @param {string} threadId Codex 会话 id（thread.started 事件里给的）
    * @returns {{contextWindow:number, contextUsed:number}|null}
    */
-  codexRolloutContext(threadId) {
-    const id = String(threadId || '').trim();
-    if (!id) return null;
-    const home = process.env.USERPROFILE || process.env.HOME || '';
-    if (!home) return null;
-    const root = path.join(home, '.codex', 'sessions');
-    // Rollout 目录按日期分层：只翻今天和昨天，不做全盘扫描。
-    const days = [];
-    for (let offset = 0; offset < 2; offset += 1) {
-      const day = new Date(Date.now() - offset * 86400000);
-      const month = String(day.getMonth() + 1).padStart(2, '0');
-      const date = String(day.getDate()).padStart(2, '0');
-      days.push(path.join(root, String(day.getFullYear()), month, date));
-    }
-    for (const dir of days) {
-      let names = [];
-      try { names = readdirSync(dir); } catch { continue; }
-      const hit = names.filter((name) => name.startsWith('rollout-') && name.endsWith('-' + id + '.jsonl'));
-      if (!hit.length) continue;
-      let body = '';
-      try { body = readFileSync(path.join(dir, hit[hit.length - 1]), 'utf8'); } catch { return null; }
-      const lines = body.split(/\r?\n/);
-      // 从后往前找：最后一个带窗口大小的 token_count 就是当前占用。
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        if (!lines[index] || lines[index].indexOf('model_context_window') < 0) continue;
-        let entry = null;
-        try { entry = JSON.parse(lines[index]); } catch { continue; }
-        const payload = entry && entry.payload ? entry.payload : {};
-        const info = payload.info && typeof payload.info === 'object' ? payload.info : {};
-        const window = Number(info.model_context_window) || Number(payload.model_context_window) || 0;
-        if (!window) continue;
-        const last = info.last_token_usage && typeof info.last_token_usage === 'object' ? info.last_token_usage : null;
-        // 上下文占用看最后一次请求的输入侧 token（Codex 的 input_tokens 已含缓存命中部分）。
-        const used = last ? (Number(last.input_tokens) || 0) : 0;
-        return { contextWindow: window, contextUsed: used };
-      }
-      return null;
-    }
-    return null;
-  }
 
-  handleCodex(session, event) {
-    const type = event.type;
-    if (type === 'thread.started') {
-      session.codexThreadId = event.thread_id || session.codexThreadId;
-      this.sessionEvent(session);
-      this.scheduleSave();
-      return;
-    }
-    if (type === 'turn.started') return;
-    if (type === 'item.started' || type === 'item.updated' || type === 'item.completed') {
-      this.handleCodexItem(session, event.item || {}, type === 'item.completed');
-      return;
-    }
-    if (type === 'turn.completed') {
-      const usage = event.usage || {};
-      const context = this.codexRolloutContext(session.codexThreadId);
-      session.usage = {
-        input: Number(usage.input_tokens) || 0,
-        output: Number(usage.output_tokens) || 0,
-        cacheRead: Number(usage.cached_input_tokens) || 0,
-        cacheWrite: Number(usage.cache_write_input_tokens) || 0,
-        thinking: Number(usage.reasoning_output_tokens) || 0,
-        costUsd: null,
-        durationMs: session._codexTurn ? now() - session._codexTurn.started : 0,
-        contextWindow: context ? context.contextWindow : 0,
-        contextUsed: context ? context.contextUsed : 0,
-        model: session.model,
-        // Codex exec reports no per-step decode timing, so tokens/second stays
-        // absent rather than being derived from wall time that includes tools.
-        decodeMs: 0,
-        ttftMs: null,
-        turns: (Number(session._codexTurns) || 0) + 1,
-        steps: Number(session._turnSteps) || 0,
-      };
-      session._turnActive = false;
-      session._turnPhase = null;
-      session.status = 'idle';
-      session._codexTurns = (Number(session._codexTurns) || 0) + 1;
-      this.sessionEvent(session);
-      this.emit(session, { type: 'turn-end' });
-      // rollout 文件是 CLI 边跑边写的：偶尔比 turn.completed 晚几毫秒落地。
-      // 这一次没读到窗口就再补一次读取（读到就补播一次会话快照，不轮询）。
-      if (!context && session.codexThreadId) {
-        const key = session.codexThreadId;
-        const timer = setTimeout(() => {
-          if (session.codexThreadId !== key || !session.usage) return;
-          if (Number(session.usage.contextWindow) > 0) return;
-          const late = this.codexRolloutContext(key);
-          if (!late) return;
-          session.usage.contextWindow = late.contextWindow;
-          session.usage.contextUsed = late.contextUsed;
-          this.sessionEvent(session);
-        }, 1200);
-        if (timer && typeof timer.unref === 'function') timer.unref();
-      }
-      return;
-    }
-    if (type === 'turn.failed') {
-      this.failTurn(session, '工具执行', 'Codex 执行失败', text(event.error && event.error.message || event.message));
-      return;
-    }
-    if (type === 'error') {
-      this.push(session, { id: idOf('err'), kind: 'error', phase: 'CLI', category: 'Codex 报告错误', detail: text(event.message), at: now() });
-    }
-  }
 
-  handleCodexItem(session, item, completed) {
-    const id = text(item.id) || idOf('codexitem');
-    const kind = text(item.type);
-    const existing = session.items.find((entry) => entry.id === 'codex-' + id);
-    if (kind === 'reasoning') {
-      if (!completed || existing) return;
-      this.push(session, { id: 'codex-' + id, kind: 'thinking', text: text(item.text), at: now(), durationMs: 0, streaming: false });
-      return;
-    }
-    if (kind === 'agent_message') {
-      if (!completed) return;
-      this.push(session, { id: 'codex-' + id, kind: 'assistant', text: text(item.text), at: now(), streaming: false });
-      return;
-    }
-    if (kind === 'command_execution') {
-      if (!existing) {
-        this.push(session, {
-          id: 'codex-' + id,
-          kind: 'tool',
-          toolId: id,
-          name: 'Bash',
-          input: { command: item.command },
-          target: oneLine(item.command, 200),
-          category: 'terminal',
-          verb: '命令',
-          status: item.status === 'completed' ? (item.exit_code === 0 ? 'done' : 'error') : 'running',
-          startedAt: now(),
-          at: now(),
-          output: text(item.aggregated_output),
-          isError: typeof item.exit_code === 'number' && item.exit_code !== 0,
-          exitCode: typeof item.exit_code === 'number' ? item.exit_code : null,
-          audit: true,
-          diff: null,
-          decision: null,
-        });
-        session._toolSteps = (Number(session._toolSteps) || 0) + 1;
-      }
-      if (completed || item.status === 'completed') {
-        this.patch(session, 'codex-' + id, {
-          status: item.exit_code === 0 ? 'done' : 'error',
-          output: text(item.aggregated_output),
-          isError: typeof item.exit_code === 'number' && item.exit_code !== 0,
-          exitCode: typeof item.exit_code === 'number' ? item.exit_code : null,
-          endedAt: now(),
-        });
-      } else {
-        this.patch(session, 'codex-' + id, { output: text(item.aggregated_output) });
-      }
-      return;
-    }
-    if (kind === 'file_change') {
-      if (!completed) return;
-      const changes = Array.isArray(item.changes) ? item.changes : [];
-      const paths = changes.map((change) => text(change.path)).filter(Boolean);
-      for (const change of changes) {
-        const filePath = text(change.path);
-        if (!filePath) continue;
-        // Codex 的 file_change 只说「这个文件变了」，不给增删行数。
-        // 原来按 kind 编了个 +1，删除还会被记成 +1 新增、removed 永远是 0。
-        // 这里只如实记录变化种类，不编造行数（界面上只用文件数，不展示 ±N）。
-        const kind = text(change.kind) || 'update';
-        const existingFile = session.files.find((file) => file.path === filePath);
-        if (existingFile) { existingFile.kind = kind; existingFile.at = now(); }
-        else session.files.push({ path: filePath, kind, at: now() });
-      }
-      this.push(session, {
-        id: 'codex-' + id, kind: 'filechange', files: paths, status: item.status === 'completed' ? 'done' : 'running',
-        at: now(), completed: true,
-      });
-      this.sessionEvent(session);
-      return;
-    }
-    if (kind === 'mcp_tool_call') {
-      /* 失败时 Codex 把正文放在 item.error 里，result 是空的。以前只记了
-         `isError: Boolean(item.error)`，等于把「为什么失败」丢掉了——界面上那张卡
-         展开后只剩「没有更多诊断信息」。现在把 error.message / error 原文一起收。 */
-      const failure = codexFailureText(item.error);
-      if (!existing) {
-        this.push(session, {
-          id: 'codex-' + id, kind: 'tool', toolId: id, name: text(item.tool) || 'MCP',
-          input: item.arguments || {}, target: oneLine(item.tool, 120), category: 'wrench', verb: '工具',
-          status: item.status === 'completed' ? (failure ? 'error' : 'done') : 'running',
-          startedAt: now(), at: now(),
-          output: contentToText(item.result),
-          errorText: failure,
-          isError: Boolean(failure), audit: true, diff: null, decision: null,
-        });
-      } else if (completed) {
-        this.patch(session, 'codex-' + id, {
-          status: failure ? 'error' : 'done',
-          output: contentToText(item.result) || (existing ? existing.output : ''),
-          errorText: failure || (existing ? existing.errorText : ''),
-          isError: Boolean(failure), endedAt: now(),
-        });
-      }
-      return;
-    }
-    if (kind === 'error') {
-      /* CLI 自己关于「实验性功能未启用完」之类的警告，不是这一轮失败了。
-         它每轮都会出现，塞进对话里就变成一条红色错误卡，看起来像任务挂了。
-         这类提示挪进右栏「运行提示」，会话状态不受影响。 */
-      const message = text(item.message);
-      if (isAdvisoryMessage(message)) {
-        session.advisories = [...(Array.isArray(session.advisories) ? session.advisories : []), { text: clipText(message, 400), at: now() }].slice(-8);
-        this.sessionEvent(session);
-        return;
-      }
-      this.push(session, { id: idOf('err'), kind: 'error', phase: '工具执行', category: 'Codex 报告错误', detail: message, at: now() });
-    }
-  }
+
+
+
 
   /* ------------------------------------------------------------ approvals */
 

@@ -140,7 +140,11 @@
 插件是纯 JS，无构建步骤：
 
 ```
-index.js              Host 半：CLI 进程、SSE、审批桥、文件 API
+index.js              Host 半：会话/工作区/路由/存储/审批/文件 API
+lib/claude.js         Claude 适配器：启动参数 + stream-json 事件解析
+lib/codex.js          Codex 适配器：codex exec --json 启动参数 + 事件解析
+lib/format.js         把两个 CLI 的原始事件变成人能看懂的一行话
+lib/util.js           无状态小工具（时间、id、路径、子进程、取值集合）
 client.js             客户端半：三栏界面（React.createElement + 自绘 CSS）
 mcp-permission.mjs    Claude 权限请求 → 工作台审批卡 的 MCP 桥
 cordis.patch.yml      bundle 行声明

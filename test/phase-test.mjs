@@ -7,9 +7,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readServer } from './source.mjs';
 
-const INDEX = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'index.js');
-const src = fs.readFileSync(INDEX, 'utf8');
+
+const src = readServer();
 
 const extractMethod = (signature) => {
   const start = src.indexOf(signature);

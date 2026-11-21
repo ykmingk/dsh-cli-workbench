@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const files = fs.readdirSync(dir)
-  .filter((name) => name.endsWith('.mjs') && name !== 'run-all.mjs')
+  .filter((name) => name.endsWith('-test.mjs'))
   .sort();
 
 let totalPass = 0;
