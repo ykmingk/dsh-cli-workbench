@@ -329,10 +329,18 @@ function json(res, status, value) {
   res.end(payload);
 }
 
-/** 用系统默认程序打开一个路径或 URL（文件/文件夹/链接都同一套）。 */
+/**
+ * 用系统默认程序打开一个路径或 URL（文件/文件夹/链接都同一套）。
+ *
+ * 安全注意：cmd.exe 在解析 /c 的命令串时把换行当作命令分隔符，**双引号拦不住**，
+ * 所以 `a"\ncalc` 这类值会被拼成第二条命令。target 直接来自 HTTP 请求体
+ * （/open、/skills/open、/rules/open），因此这里遇到控制字符或引号一律拒绝，
+ * 而不是「过滤掉再继续」——被过滤后还能打开的路径本身就不是合法路径。
+ */
 function openTarget(target) {
-  const value = text(target).replace(/"/g, '');
+  const value = text(target).trim();
   if (!value) return false;
+  if (/[\u0000-\u001f\u007f"]/.test(value)) return false;
   spawn('cmd.exe', ['/d', '/s', '/c', 'start "" "' + value + '"'], { detached: true, windowsHide: true }).unref();
   return true;
 }
@@ -628,18 +636,29 @@ class Workbench {
   save() {
     try {
       mkdirSync(this.dir, { recursive: true });
-      const sessions = [...this.sessions.values()].map((session) => ({
-        ...session,
-        pending: null,
-        pendingQueue: [],
-        _turnActive: undefined,
-        items: session.items.slice(-MAX_ITEMS),
-      }));
+      const sessions = [...this.sessions.values()].map((session) => {
+        // 内存态与持久态必须分开：session 上挂着 _reapTimer（Timeout 对象，含循环
+        // 引用）、_mcpToken、_textIds 等私有字段，直接展开会让 JSON.stringify 抛异常，
+        // 而异常被下面的 catch 吞掉 → 整份 sessions.json 静默停止更新（删掉的会话
+        // 重启后复活、退出时丢全部会话）。这里按前缀统一剥离，新增私有字段无需再记清单。
+        const copy = { ...session };
+        for (const key of Object.keys(copy)) {
+          if (key.charCodeAt(0) === 95 /* _ */) delete copy[key];
+        }
+        copy.pending = null;
+        copy.pendingQueue = [];
+        copy.items = session.items.slice(-MAX_ITEMS);
+        return copy;
+      });
       const payload = JSON.stringify({ version: 2, savedAt: now(), workspaces: this.workspaceList(), sessions });
       const tmp = this.file + '.tmp';
       writeFileSync(tmp, payload);
       renameSync(tmp, this.file);
-    } catch { /* disk trouble must not break a turn */ }
+      this.saveError = null;
+    } catch (error) {
+      // 写盘失败不能打断一回合，但也不能一声不吭——把原因留下来供 /status 查看。
+      this.saveError = String(error && error.message ? error.message : error);
+    }
   }
 
   /* ------------------------------------------------------------- lifecycle */
@@ -1081,7 +1100,7 @@ class Workbench {
         return json(res, 200, { ok: true });
       }
       if (!target) return json(res, 400, { error: 'empty target' });
-      openTarget(target);
+      if (!openTarget(target)) return json(res, 400, { error: '无法打开该路径' });
       return json(res, 200, { ok: true });
     }
     if (route === '/upgrade' && method === 'POST') {
@@ -1320,7 +1339,11 @@ class Workbench {
   }
 
   async status() {
-    if (this.statusCache.value && now() - this.statusCache.at < 30000) return this.statusCache.value;
+    if (this.statusCache.value && now() - this.statusCache.at < 30000) {
+      // 落盘状态是「当前态」，不能被 30 秒缓存冻住：每次都从实例上刷新。
+      this.statusCache.value.storage.saveError = this.saveError || null;
+      return this.statusCache.value;
+    }
     const [claude, codex] = await Promise.all([this.detect('claude'), this.detect('codex')]);
     const working = this.ctx && typeof this.ctx.get === 'function' ? this.ctx.get('workingDirectory') : null;
     const value = {
@@ -1328,6 +1351,9 @@ class Workbench {
       defaultCwd: (working && working.defaultDirectory) || process.cwd(),
       workspaces: this.workspaceList(),
       dataDir: this.dir,
+      // 最近一次 sessions.json 写盘失败的原因（成功时为 null）。写盘失败不会打断
+      // 回合，但必须能查到——否则「改了没保住」只会表现为重启后数据回退。
+      storage: { saveError: this.saveError || null },
     };
     this.statusCache = { at: now(), value };
     return value;
@@ -1646,6 +1672,12 @@ class Workbench {
       try {
         this.clearReap(session);
         const child = this.ensureClaude(session);
+        // 同步那半：进程可能在上面的 ensureClaude 返回前后才退出，此时 write 会直接
+        // 抛 ERR_STREAM_DESTROYED。先拦住，走回合失败而不是让异常冒到调用方。
+        if (!child.stdin || child.stdin.destroyed || !child.stdin.writable || child.exitCode != null) {
+          this.failTurn(session, '启动', 'CLI 进程已退出', '发消息时 claude 进程已结束，请重新发送。');
+          return;
+        }
         child.stdin.write(JSON.stringify({
           type: 'user',
           message: { role: 'user', content: [{ type: 'text', text: content }] },
@@ -1796,6 +1828,15 @@ class Workbench {
     child.on('error', (error) => {
       this.procs.delete(session.id);
       this.failTurn(session, '启动', '无法启动 claude', String(error));
+    });
+    // 进程在「写入瞬间」退出时，往 stdin 写会先同步抛错、再异步发出 EPIPE/EOF。
+    // 异步那半没有监听就是 uncaughtException —— Host 跑在 DSH 宿主进程里，等于整个
+    // 应用崩溃。兜住它，让它走正常的回合失败路径。
+    child.stdin.on('error', (error) => {
+      if (this.procs.get(session.id) === child) this.procs.delete(session.id);
+      if (session._turnActive) {
+        this.failTurn(session, '工具执行', 'CLI 进程已退出，消息未送达', String(error));
+      }
     });
     child.on('close', (code) => {
       if (this.procs.get(session.id) === child) this.procs.delete(session.id);
