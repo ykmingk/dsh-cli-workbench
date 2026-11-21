@@ -1132,15 +1132,16 @@ window.__ModuleLoader__.load({
 }
 .cw-chip:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-chip.sm{ height: 24px; padding: 0 8px; font-size: var(--cw-fs-xs); text-shadow: none; box-shadow: inset 0 0 0 .5px var(--cw-border-2); }
-/* 模型菜单要放下「别名 + 网关里的完整模型名」，比其他浮层宽；
-   右侧的模型名不换行，超长用省略号（悬停有 title 看全名）。 */
-.cw-model-pop{ min-width: 400px; max-width: min(575px, calc(100vw - 24px)); }
-/* 右侧模型名原来用 11px：在带 backdrop-filter 的浮层里又小又淡，看着发虚。
-   抬到 12px、行高定死 16px（避免半像素居中）、颜色提一档到 --cw-muted，
-   并把 font-weight 写死 400，防止合成层里出现「伪加粗/伪细体」。 */
-.cw-model-pop .cw-pop-item .tail{
-  max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: var(--cw-fs-xs); line-height: 16px; font-weight: 400; color: var(--cw-muted);
+/* 模型菜单要放下「别名 + 网关里的完整模型名」，比其他浮层宽。
+   注意用**双类选择器**：.cw-pop 定义在本文件更靠后的位置，单类选择器的
+   min/max-width 会被它整段盖掉（.cw-picker-pop 也出于同样原因用双类）。 */
+.cw-pop.cw-model-pop{ min-width: 533px; max-width: min(740px, calc(100vw - 24px)); }
+/* 右侧模型名发虚的两条主因：字号比左侧标签小一档（11→现在 13），
+   颜色又是三级灰（--cw-subtle），灰底 + 灰字 + 小字叠在一起就糊。
+   这里字号与左侧标签同档、颜色提到正文级，行高定死 18px 避免半像素居中。 */
+.cw-pop.cw-model-pop .cw-pop-item .tail{
+  max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--cw-fs-sm); line-height: 18px; font-weight: 400; color: var(--cw-text);
   letter-spacing: 0; font-variant-numeric: tabular-nums;
 }
 .cw-pop-sep{ height: .5px; margin: 4px 8px; background: var(--cw-border-2); }
