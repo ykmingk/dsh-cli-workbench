@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 用户报的四个 bug 的回归测试（静态断言 + 真实调用）。
  */
 import fs from 'node:fs';
@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const BASE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const srcIndex = fs.readFileSync(path.join(BASE, 'index.js'), 'utf8');
+const srcIndex = [path.join(BASE, 'index.js'), ...fs.readdirSync(path.join(BASE, 'lib')).filter((n) => n.endsWith('.js')).sort().map((n) => path.join(BASE, 'lib', n))].map((p) => fs.readFileSync(p, 'utf8')).join('\n');
 const srcClient = fs.readFileSync(path.join(BASE, 'client.js'), 'utf8');
 
 let pass = 0, fail = 0;
@@ -109,5 +109,19 @@ console.log('\n[新增能力] 工作区可添加 / 可撤销 / 有排查日志')
     && !srcIndex.includes('operations.log') === false);
 }
 
+
+console.log('\n[1.0.27] Codex 配置忽略警告不算失败（用户朋友机器实测）');
+{
+  const srcFormat = fs.readFileSync(path.join(BASE, 'lib', 'format.js'), 'utf8');
+  const body = srcFormat.slice(srcFormat.indexOf('function isAdvisoryMessage'), srcFormat.indexOf('function codexFailureText'));
+  const advisory = new Function('message', body + '; return isAdvisoryMessage(message);');
+  const hers = 'Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.'
+    + '\nuser (C:\\Users\\Administrator\\.codex\\config.toml): `disable_response_storage` is ignored.';
+  ok('她的警告判为提示（右栏运行提示）', advisory(hers) === true);
+  ok('单行 is ignored 也判为提示', advisory('user (C:\\x\\.codex\\config.toml): `foo_bar` is ignored.') === true);
+  ok('真错误仍然报错', advisory('stream error: connection refused') === false && advisory('Unauthorized') === false);
+  ok('两个 error 分支都走白名单',
+    (srcIndex.match(/isAdvisoryMessage\(message\)/g) || []).length >= 2);
+}
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
