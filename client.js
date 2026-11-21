@@ -3225,20 +3225,20 @@ button.cw-pill[aria-expanded="true"]{
       useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
       const browse = async () => {
         if (!workspaceApi || !workspaceApi.pickDirectory) {
-          if (typeof window !== 'undefined' && window.prompt) {
-            const picked = window.prompt('工作目录', cwd);
-            if (picked) setCwd(picked);
-          }
+          /* Electron 渲染进程禁用 window.prompt（永远返回 null），这个兜底在
+             桌面端就是死路——与其静默无效，不如告诉用户怎么手输。 */
+          showToast('此环境没有可用的目录选择器：请直接在上面的输入框粘贴完整路径');
+          if (inputRef.current) inputRef.current.focus();
           return;
         }
         try {
           const picked = await workspaceApi.pickDirectory();
           if (picked) setCwd(picked);
         } catch (error) {
-          if (window.prompt) {
-            const manual = window.prompt('工作目录', cwd);
-            if (manual) setCwd(manual);
-          }
+          // DSH 在 SSH/远程启动等场景装配的是 browse 后端（目录列表），没有弹原生选择器
+          // 的能力——这里如实说出原因，而不是让用户以为按钮坏了。
+          showToast('目录选择器不可用（' + error.message + '）：请直接在上面的输入框粘贴完整路径');
+          if (inputRef.current) inputRef.current.focus();
         }
       };
       const create = async () => {
@@ -5147,12 +5147,14 @@ button.cw-pill[aria-expanded="true"]{
                 }),
                 h('div', { className: 'cw-input-foot' },
                   h('div', { className: 'cw-input-tools' },
-                    /* 文件 / 斜杠命令：各自一个锚点容器，浮层贴在按钮上沿 */
+                    /* 文件 / 斜杠命令：各自一个锚点容器，浮层贴在按钮上沿。
+                       没有会话时置灰：引用文件要跟着一个工作目录走，必须先有会话。
+                       title 说明原因——灰按钮没解释会被当成「坏了」。 */
                     h('span', { className: 'cw-anchor' },
                       h('button', {
                         type: 'button',
                         className: 'cw-tool',
-                        title: '引用项目文件（· 或 @ 键）',
+                        title: currentId ? '引用项目文件（· 或 @ 键）' : '先新建会话，才能引用该会话工作目录里的文件',
                         'aria-label': '引用项目文件',
                         onClick: () => openPicker('file'),
                         disabled: !currentId,
@@ -5162,7 +5164,7 @@ button.cw-pill[aria-expanded="true"]{
                       h('button', {
                         type: 'button',
                         className: 'cw-tool',
-                        title: 'CLI 斜杠命令（/ 键）',
+                        title: currentId ? 'CLI 斜杠命令（/ 键）' : '先新建会话，命令发给会话才有意义',
                         'aria-label': 'CLI 斜杠命令',
                         onClick: () => openPicker('slash'),
                         disabled: !currentId,
