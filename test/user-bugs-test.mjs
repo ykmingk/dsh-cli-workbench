@@ -123,5 +123,30 @@ console.log('\n[1.0.27] Codex 配置忽略警告不算失败（用户朋友机�
   ok('两个 error 分支都走白名单',
     (srcIndex.match(/isAdvisoryMessage\(message\)/g) || []).length >= 2);
 }
+
+console.log('\n[1.0.29] 朋友机器的两个问题：目录选择器 + 打开文件夹 + npm 依赖');
+{
+  // 1. 目录选择器不再依赖 DSH 的 pickDirectory（browse 后端会报 unavailable）
+  ok('客户端不再调用 uiWorkspace.pickDirectory', !/workspaceApi\s*(&&\s*workspaceApi\s*)?\.\s*pickDirectory|uiWorkspace'\)?\.\s*pickDirectory/.test(srcClient));
+  ok('存在插件自建的目录选择器组件', /function DirPicker\(/.test(srcClient));
+  ok('新建会话的浏览按钮用自建选择器', /const browse = \(\) => setPicking\(true\)/.test(srcClient));
+  ok('添加工作区也走自建选择器', /setWsPickerOpen\(true\)/.test(srcClient));
+  ok('Host 提供 /dirs 目录列表（只读、只列文件夹）',
+    /route === '\/dirs' && method === 'GET'/.test(srcIndex)
+    && /if \(!child\.isDirectory\(\)\) continue;/.test(srcIndex));
+
+  // 2. 打开文件夹：路径不存在要明确报错，而不是返回 200 却什么都不发生
+  ok('openTarget 先查存在性', /statSync\(value\)/.test(srcIndex) && /reason: 'missing'/.test(srcIndex));
+  ok('/open 把失败原因回给界面', /路径不存在：' \+ target/.test(srcIndex));
+  ok('detached 子进程接了 error 事件（否则未捕获异常会带走 Host）',
+    /child\.on\('error', \(\) => \{ \/\* 打开失败不该影响工作台 \*\/ \}\);/.test(srcIndex));
+
+  // 3. 没有 npm 也要能升级、且不能显示成「检测失败」
+  ok('npm 可用性单独探测并缓存', /async hasNpm\(\)/.test(srcIndex));
+  ok('没有 npm 时改用 CLI 自带 update', /claude update' : 'codex update/.test(srcIndex));
+  ok('版本面板区分「未安装 / 无法检查更新 / 查询失败」',
+    /'未安装'/.test(srcClient) && /'无法检查更新'/.test(srcClient) && /'查询失败'/.test(srcClient));
+  ok('不再把「查不到最新版」写成检测失败', !/'检测失败'/.test(srcClient));
+}
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

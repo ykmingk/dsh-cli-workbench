@@ -215,15 +215,23 @@ function openTarget(target) {
   const value = text(target).trim();
   if (!value) return false;
   if (/[\u0000-\u001f\u007f"]/.test(value)) return false;
+  /* 路径不存在时 explorer.exe 只会静默退出（退出码非 0，没有输出），
+     接口却返回 200——用户看到的就是「点了没反应」。先自己判断存在性。 */
+  const isUrl = /^(https?|mailto):/i.test(value);
+  if (!isUrl) {
+    try { statSync(value); } catch { return { ok: false, reason: 'missing' }; }
+  }
   try {
-    if (/^(https?|mailto):/i.test(value)) {
-      spawn('rundll32.exe', ['url.dll,FileProtocolHandler', value], { detached: true, windowsHide: true }).unref();
-    } else {
-      spawn('explorer.exe', [value], { detached: true, windowsHide: true }).unref();
-    }
-    return true;
-  } catch {
-    return false;
+    const child = isUrl
+      ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', value], { detached: true, windowsHide: true })
+      : spawn('explorer.exe', [value], { detached: true, windowsHide: true });
+    // detached 子进程的 error 事件没人接就是 uncaughtException（Host 跑在 DSH 宿主的
+    // 进程里，等于把整个应用带走）。接住它，只记一次失败。
+    child.on('error', () => { /* 打开失败不该影响工作台 */ });
+    child.unref();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: String(error && error.message ? error.message : error) };
   }
 }
 
@@ -426,6 +434,8 @@ class Workbench {
     this.mcpScript = MCP_SCRIPT;
     this.statusCache = { at: 0, value: null };
     this.updateCache = { at: 0, value: null };
+    // npm 是否存在（缓存）：只影响「查最新版 / 升级」，不影响任何使用功能
+    this.npmCache = null;
     this.codexSandboxCache = null;
     this.codexSandboxPromise = null;
     this.compatCache = new Map();
@@ -1214,7 +1224,47 @@ class Workbench {
       const body = await readBody(req);
       return this.cancelPermission(req, res, body);
     }
-    if (route === '/fs/tree' && method === 'GET') {
+    if (route === '/dirs' && method === 'GET') {
+        /* 插件自己的目录选择器后端。
+           DSH 的 ctx.uiWorkspace.pickDirectory() 在部分装配下根本没有「弹系统选择器」
+           的能力（它会装配成 browse 后端），于是「浏览」按钮点了没反应。
+           这里直接列目录：只读、只返回文件夹名，不读文件内容。 */
+        const raw = text(url.searchParams.get('path') || '');
+        if (!raw) {
+          /* 起点不给「扫描所有盘符」：盘符可能是断开的网络映射，statSync 会卡住
+             整个事件循环（实测让后续请求全部超时）。这里只给确定的几处：
+             系统盘、用户主目录、已知工作区。要别的路径直接在上面输入。 */
+          const roots = [];
+          const addRoot = (value) => {
+            const item = text(value).trim();
+            if (item && !roots.some((root) => root.toLowerCase() === item.toLowerCase())) roots.push(item);
+          };
+          if (process.platform === 'win32') addRoot((process.env.SystemDrive || 'C:') + '\\');
+          else addRoot('/');
+          addRoot(os.homedir());
+          for (const entry of this.workspaces.values()) addRoot(entry.cwd);
+          return json(res, 200, { path: '', parent: null, roots, entries: [] });
+        }
+        const dir = path.resolve(raw);
+        let isDir = false;
+        try { isDir = statSync(dir).isDirectory(); } catch { isDir = false; }
+        if (!isDir) return json(res, 400, { error: '目录不存在：' + dir });
+        const entries = [];
+        let truncated = false;
+        try {
+          for (const child of readdirSync(dir, { withFileTypes: true })) {
+            if (!child.isDirectory()) continue;
+            if (entries.length >= 500) { truncated = true; break; }
+            entries.push({ name: child.name, path: path.join(dir, child.name) });
+          }
+        } catch (error) {
+          return json(res, 403, { error: '无法读取该目录：' + (error && error.message ? error.message : error) });
+        }
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        const parent = path.dirname(dir) === dir ? null : path.dirname(dir);
+        return json(res, 200, { path: dir, parent, roots: [], entries, truncated });
+      }
+      if (route === '/fs/tree' && method === 'GET') {
       const session = this.session(url.searchParams.get('session') || '');
       if (!session) return json(res, 404, { error: 'session not found' });
       const dir = text(url.searchParams.get('path')) || session.cwd;
@@ -1236,10 +1286,19 @@ class Workbench {
       if (session && body.locate) {
         const safe = this.safePath(session, target);
         if (!safe) return json(res, 403, { error: 'path outside workspace' });
-        spawn('explorer.exe', ['/select,', safe], { detached: true, windowsHide: true }).unref();
+        const child = spawn('explorer.exe', ['/select,', safe], { detached: true, windowsHide: true });
+        child.on('error', () => { /* 打开失败不该影响工作台 */ });
+        child.unref();
         return json(res, 200, { ok: true });
       }
       if (!target) return json(res, 400, { error: 'empty target' });
+      /* 先判存在性再看归属：路径不存在与「越界」是两回事，报错要说清楚。
+         （顺序反了会把「目录被删了」说成「只能打开工作台里的路径」。） */
+      if (!/^(https?|mailto):/i.test(target)) {
+        let exists = false;
+        try { exists = Boolean(statSync(target)); } catch { exists = false; }
+        if (!exists) return json(res, 400, { error: '路径不存在：' + target });
+      }
       /* 只允许打开「工作台知道的路径」：已登记的工作区、某个会话的工作目录，
          或（带 session 时）该会话作用域内的文件。
          原来任意路径都会交给系统打开——参数虽然已经消毒，但能力本身没有边界。 */
@@ -1247,7 +1306,12 @@ class Workbench {
         || (session ? Boolean(this.safePath(session, target)) : false)
         || this.knownCwd(target);
       if (!allowed) return json(res, 403, { error: '只能打开工作台里的路径' });
-      if (!openTarget(target)) return json(res, 400, { error: '无法打开该路径' });
+      const opened = openTarget(target);
+      if (!opened.ok) {
+        return json(res, 400, {
+          error: opened.reason === 'missing' ? '路径不存在：' + target : ('无法打开该路径：' + (opened.reason || '未知原因')),
+        });
+      }
       return json(res, 200, { ok: true });
     }
     if (route === '/upgrade' && method === 'POST') {
@@ -1614,11 +1678,16 @@ class Workbench {
       return this.updateCache.value;
     }
     const entries = {};
+    // npm 只是「查最新版 / 用 npm 升级」的一条路，不是使用前提。
+    // 没装 Node.js 的机器上它不存在，这时不该把整块状态显示成「检测失败」。
+    const hasNpm = await this.hasNpm();
     for (const [id, meta] of Object.entries(PROVIDERS)) {
       // No quotes: cmd.exe's /d /s /c rewrites `"pkg"` into `""pkg""`, which npm
       // rejects as EINVALIDPACKAGENAME. Package names come from PROVIDERS, so the
       // string is fixed ASCII and never needs shell quoting.
-      const result = await run('npm view ' + meta.pkg + ' version --json --loglevel=error');
+      const result = hasNpm
+        ? await run('npm view ' + meta.pkg + ' version --json --loglevel=error')
+        : { code: -1, stdout: '', stderr: '' };
       let latest = '';
       if (result.code === 0) {
         try {
@@ -1628,26 +1697,50 @@ class Workbench {
           latest = parseVersion(result.stdout);
         }
       }
-      entries[id] = { latest, checkedAt: now(), error: result.code === 0 ? '' : npmError(result) };
+      entries[id] = {
+        latest,
+        checkedAt: now(),
+        error: result.code === 0 ? '' : npmError(result),
+        npm: hasNpm,
+        // 两个 CLI 都自带 update 子命令：没有 npm 也能升级，用它替代 npm install -g
+        updater: id === 'claude' ? 'claude update' : 'codex update',
+      };
     }
     const value = { fetchedAt: now(), entries };
     this.updateCache = { at: now(), value };
     return value;
   }
 
+  /** npm 是否可用（缓存 10 分钟：它只影响「查/升最新版」这一件事）。 */
+  async hasNpm() {
+    if (this.npmCache && now() - this.npmCache.at < 10 * 60 * 1000) return this.npmCache.ok;
+    const result = await run('npm --version');
+    const ok = result.code === 0 && /\d+\.\d+/.test(result.stdout);
+    this.npmCache = { at: now(), ok };
+    return ok;
+  }
+
   async upgrade(provider) {
-    const result = await run('npm install -g ' + PROVIDERS[provider].pkg + '@latest --loglevel=error');
+    /* 优先 npm（行为稳定、能装到全局），没有 npm 时退回 CLI 自带的 update 子命令。
+       只用 npm 会让没装 Node.js 的机器完全无法升级——而两个 CLI 都自带更新器。 */
+    const useNpm = await this.hasNpm();
+    const command = useNpm
+      ? 'npm install -g ' + PROVIDERS[provider].pkg + '@latest --loglevel=error'
+      : (provider === 'claude' ? 'claude update' : 'codex update');
+    const result = await run(command);
     if (result.code === 0) {
       // A new CLI release can change the flags and the sandbox backend, so the next
       // status request must probe again instead of reusing pre-upgrade answers.
       this.statusCache = { at: 0, value: null };
       this.updateCache = { at: 0, value: null };
+      this.npmCache = null;
       this.compatCache.clear();
       this.codexSandboxCache = null;
     }
     return {
       ok: result.code === 0,
       provider,
+      via: useNpm ? 'npm' : command,
       output: result.code === 0 ? oneLine(result.stdout, 400) : npmError(result),
     };
   }
@@ -2162,8 +2255,11 @@ class Workbench {
   withinAnyWorkspace(input) {
     const raw = text(input);
     if (!raw) return false;
+    /* 路径还不存在时（比如要新建的目录）realpath 会抛错，原来直接返回 false
+       ——于是「工作区里一个不存在的子目录」被报成「只能打开工作台里的路径」。
+       拿不到真实路径就退回解析后的绝对路径，路径归属的判断靠前缀就够了。 */
     let target;
-    try { target = realpathSync.native ? realpathSync.native(raw) : realpathSync(raw); } catch { return false; }
+    try { target = realpathSync.native ? realpathSync.native(raw) : realpathSync(raw); } catch { target = path.resolve(raw); }
     const lower = target.toLowerCase();
     for (const entry of this.workspaces.values()) {
       const root = String(entry.cwd || '');

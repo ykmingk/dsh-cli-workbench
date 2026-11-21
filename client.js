@@ -22,8 +22,7 @@ window.__ModuleLoader__.load({
       { id: 'workspace-write', label: '工作区写入', hint: '沙箱内读写工作区，系统其它位置被拒' },
       { id: 'bypass', label: '完全访问', hint: '跳过沙箱，命令与写文件都直接执行' },
     ];
-    let workspaceApi = null;
-    let layoutApi = null;
+        let layoutApi = null;
     /* 面板切走再切回来时组件会整个重挂载；上一次拿到的 /status 先顶上，
        免得会话列表已经回来了、状态灯还在「启动中」。 */
     const CACHE = { boot: null };
@@ -1577,6 +1576,14 @@ button.cw-pill[aria-expanded="true"]{
 .cw-dlg-foot button.primary:hover{ background: var(--cw-accent-hover); }
 .cw-dlg-foot button.danger{ color: var(--cw-danger); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--cw-danger) 50%, transparent); }
 .cw-dlg-foot button.danger:hover{ background: var(--cw-danger-bg); }
+/* 目录选择器：列表可滚动，行是整行按钮，键盘也能走 */
+.cw-dirlist{ margin-top: 10px; max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 1px;
+  border: .5px solid var(--cw-border); border-radius: var(--cw-radius-sm); background: var(--cw-bg); padding: 4px; }
+.cw-diritem{ display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; border-radius: var(--cw-radius-sm);
+  background: transparent; color: var(--cw-text); font-size: var(--cw-fs-sm); text-align: left; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-diritem:hover{ background: var(--cw-hover); }
+.cw-diritem svg{ flex: none; color: var(--cw-subtle); }
 /* 删除工作区对话框：只移除工作台里的登记，不动磁盘目录与会话 */
 .cw-ws-del-name{ display: flex; align-items: center; gap: 6px; font-size: var(--cw-fs-base); font-weight: var(--cw-fw-medium); line-height: var(--cw-lh-base); margin-bottom: 6px; }
 .cw-ws-del-name .cw-ic{ width: 15px; height: 15px; color: var(--cw-subtle); }
@@ -3031,9 +3038,17 @@ button.cw-pill[aria-expanded="true"]{
                   const info = boot && boot.providers ? boot.providers[provider.id] : null;
                   const entry = entries[provider.id] || {};
                   const latest = entry.latest || '';
-                  const failed = Boolean(entry.error) || !latest;
+                  const installed = Boolean(info && info.installed);
+                  /* 三种「拿不到最新版」要分开写，别一律说成「检测失败」：
+                     没装 CLI、没装 npm、npm 查询出错。整块显示失败会让人以为
+                     插件连 CLI 都没认出来——实际版本号就在旁边写着。 */
+                  const noNpm = entry.npm === false;
+                  const failed = !noNpm && (Boolean(entry.error) || !latest);
                   const update = hasUpdate(provider.id);
-                  const badge = failed ? '检测失败' : update ? '有新版本' : '已是最新';
+                  const badge = !installed ? '未安装'
+                    : noNpm ? '无法检查更新'
+                      : failed ? '查询失败'
+                        : update ? '有新版本' : '已是最新';
                   return h('div', { key: provider.id, className: 'cw-upd' },
                     h('span', { className: 'cw-upd-logo' }, h(Icon, { name: provider.id === 'claude' ? 'brain' : 'terminal', size: 17 })),
                     h('div', { className: 'cw-upd-meta' },
@@ -3042,7 +3057,9 @@ button.cw-pill[aria-expanded="true"]{
                       h('div', { className: 'cw-upd-ver' },
                         h('span', null, '当前 ' + (info && info.version ? 'v' + info.version : '未安装')),
                         update ? h('span', null, '→ v' + latest) : null,
-                        failed ? h('span', { title: entry.error || '' }, '未取到 npm 版本信息') : null,
+                        noNpm
+                          ? h('span', { title: entry.error || '' }, '本机没有 npm，可用 CLI 自带命令升级')
+                          : failed ? h('span', { title: entry.error || '' }, '未取到最新版本号') : null,
                       ),
                       info && info.compat
                         ? h('div', { className: 'cw-upd-compat' + (info.compat.ok ? '' : ' bad') },
@@ -3056,15 +3073,16 @@ button.cw-pill[aria-expanded="true"]{
                             : null)
                         : null,
                     ),
-                    failed
+                    !installed
                       ? h('button', { className: 'cw-upd-btn', onClick: onRefreshUpdates }, '重新检测')
-                      : update
-                        ? h('button', { className: 'cw-upd-btn', disabled: upgrading === provider.id, onClick: () => onUpgrade(provider.id) }, upgrading === provider.id ? '升级中…' : '升级')
+                      : noNpm || update
+                        ? h('button', { className: 'cw-upd-btn', disabled: upgrading === provider.id, onClick: () => onUpgrade(provider.id) },
+                          upgrading === provider.id ? '升级中…' : (noNpm ? '用 CLI 升级' : '升级'))
                         : h('button', { className: 'cw-upd-btn', disabled: true }, '已最新'),
                   );
                 })
                 : h('div', { className: 'cw-empty-note' }, updates && updates.error ? ('无法检测更新：' + updates.error) : '正在检测最新版本…'),
-              h('div', { className: 'cw-set-note' }, '升级会安装最新稳定版，重启后生效。'),
+              h('div', { className: 'cw-set-note' }, '升级会安装最新稳定版，重启后生效。没装 npm 的机器改用 CLI 自带的 update 命令，不需要装 Node.js。'),
             ),
             h('div', { className: 'cw-upd-sec' },
               h('div', { className: 'cw-set-title' },
@@ -3210,6 +3228,96 @@ button.cw-pill[aria-expanded="true"]{
     }
 
     /**
+     * 插件自己的目录选择器。
+     *
+     * 原来「浏览」依赖 DSH 的 ctx.uiWorkspace.pickDirectory()，而 DSH 的目录选择器
+     * 会按运行环境装配成 native 或 browse 两种后端：browse 后端只有目录列表、
+     * 没有「弹系统对话框」的能力，pick() 直接报 unavailable——外在表现就是
+     * 点「浏览」毫无反应。这里不再依赖它，改为问 Host 要目录列表自己画。
+     */
+    function DirPicker({ initial, onPick, onClose }) {
+      const [path, setPath] = useState(initial || '');
+      const [data, setData] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const dialogRef = useRef(null);
+      useTrap(dialogRef);
+
+      const load = async (target) => {
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api('/dirs' + (target ? '?path=' + encodeURIComponent(target) : ''));
+          setData(result);
+          if (result.path) setPath(result.path);
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      useEffect(() => { load(initial || ''); }, []);
+
+      const rows = data && Array.isArray(data.entries) ? data.entries : [];
+      const roots = data && Array.isArray(data.roots) ? data.roots : [];
+      return h('div', { className: 'cw-mask', onClick: (event) => { if (event.target === event.currentTarget) onClose(); } },
+        h('div', { className: 'cw-dialog', ref: dialogRef, role: 'dialog', 'aria-modal': 'true', 'aria-label': '选择工作目录' },
+          h('div', { className: 'cw-dlg-head' },
+            h(Icon, { name: 'folder', size: 16 }),
+            h('b', null, '选择工作目录'),
+            h('button', { className: 'cw-iconbtn', onClick: onClose, 'aria-label': '关闭' }, h(Icon, { name: 'x' })),
+          ),
+          h('div', { className: 'cw-dlg-body' },
+            h('div', { className: 'cw-inputrow' },
+              h('input', {
+                className: 'cw-textinput',
+                value: path,
+                spellCheck: false,
+                placeholder: '输入完整路径后回车',
+                onChange: (event) => setPath(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  load(path.trim());
+                },
+                'aria-label': '目录路径',
+              }),
+              h('button', { className: 'cw-btn', onClick: () => load(path.trim()) }, '前往'),
+              data && data.parent ? h('button', { className: 'cw-btn', onClick: () => load(data.parent) }, '上级') : null,
+            ),
+            error ? h('div', { className: 'cw-rules-error' }, error) : null,
+            h('div', { className: 'cw-dirlist' },
+              busy ? h('div', { className: 'cw-empty-note' }, '读取中…') : null,
+              !busy && roots.length
+                ? roots.map((root) => h('button', {
+                  key: root,
+                  className: 'cw-diritem',
+                  onClick: () => load(root),
+                }, h(Icon, { name: 'folder', size: 13 }), root))
+                : null,
+              !busy && rows.map((dir) => h('button', {
+                key: dir.path,
+                className: 'cw-diritem',
+                onClick: () => load(dir.path),
+              }, h(Icon, { name: 'folder', size: 13 }), dir.name)),
+              !busy && !rows.length && !roots.length ? h('div', { className: 'cw-empty-note' }, '这里没有子文件夹') : null,
+              !busy && data && data.truncated ? h('div', { className: 'cw-empty-note' }, '只显示前 500 个文件夹，可用上面的路径直接输入') : null,
+            ),
+          ),
+          h('div', { className: 'cw-dlg-foot' },
+            h('button', { className: 'cw-btn', onClick: onClose }, '取消'),
+            h('button', {
+              className: 'cw-btn primary',
+              disabled: busy || !data || !data.path,
+              onClick: () => onPick(data.path),
+            }, '用这个目录'),
+          ),
+        ),
+      );
+    }
+
+    /**
      * 新建会话。助手**不由这里选**：它跟随顶部高亮的助手（选中哪个就建哪个），
      * 否则就会出现「在 Codex 工作区点新建、结果建出 Claude 会话」这种分裂。
      * 这里只确认目录和继承来的权限档位。
@@ -3218,29 +3326,13 @@ button.cw-pill[aria-expanded="true"]{
       const provider = initial.provider || 'claude';
       const meta = providerMeta(provider);
       const [cwd, setCwd] = useState(initial.cwd || (boot ? boot.defaultCwd : ''));
+      const [picking, setPicking] = useState(false);
       const [busy, setBusy] = useState(false);
       const inputRef = useRef(null);
       const dialogRef = useRef(null);
       useTrap(dialogRef);
       useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
-      const browse = async () => {
-        if (!workspaceApi || !workspaceApi.pickDirectory) {
-          /* Electron 渲染进程禁用 window.prompt（永远返回 null），这个兜底在
-             桌面端就是死路——与其静默无效，不如告诉用户怎么手输。 */
-          showToast('此环境没有可用的目录选择器：请直接在上面的输入框粘贴完整路径');
-          if (inputRef.current) inputRef.current.focus();
-          return;
-        }
-        try {
-          const picked = await workspaceApi.pickDirectory();
-          if (picked) setCwd(picked);
-        } catch (error) {
-          // DSH 在 SSH/远程启动等场景装配的是 browse 后端（目录列表），没有弹原生选择器
-          // 的能力——这里如实说出原因，而不是让用户以为按钮坏了。
-          showToast('目录选择器不可用（' + error.message + '）：请直接在上面的输入框粘贴完整路径');
-          if (inputRef.current) inputRef.current.focus();
-        }
-      };
+      const browse = () => setPicking(true);
       const create = async () => {
         if (busy) return;
         setBusy(true);
@@ -3294,6 +3386,11 @@ button.cw-pill[aria-expanded="true"]{
               h(Icon, { name: 'plus', size: 14 }), busy ? '创建中…' : '创建 ' + meta.label + ' 会话'),
           ),
         ),
+        picking ? h(DirPicker, {
+          initial: cwd,
+          onClose: () => setPicking(false),
+          onPick: (picked) => { setCwd(picked); setPicking(false); },
+        }) : null,
       );
     }
 
@@ -3598,6 +3695,8 @@ button.cw-pill[aria-expanded="true"]{
       const [renameBox, setRenameBox] = useState(null);
       const [groupMenu, setGroupMenu] = useState(null);
       const [wsRename, setWsRename] = useState(null);
+      // 添加工作区用的目录选择器（插件自建，不依赖 DSH 的 pickDirectory）
+      const [wsPickerOpen, setWsPickerOpen] = useState(false);
       const inspPref = useRef(undefined);
       if (inspPref.current === undefined) {
         let stored = '';
@@ -4221,12 +4320,9 @@ button.cw-pill[aria-expanded="true"]{
       };
 
       const addWorkspace = async () => {
-        let picked = '';
-        try {
-          picked = workspaceApi && workspaceApi.pickDirectory ? await workspaceApi.pickDirectory() : '';
-        } catch { picked = ''; }
-        if (!picked) return;
-        await restoreWorkspace(picked);
+        /* 用插件自己的目录选择器：DSH 的 pickDirectory 在部分装配下没有实现，
+           原来点「把目录添加为工作区」会毫无反应。 */
+        setWsPickerOpen(true);
       };
 
       const confirmDeleteWorkspace = async () => {
@@ -5292,6 +5388,11 @@ button.cw-pill[aria-expanded="true"]{
           onClose: () => { if (!wsDeleting) setWsDelete(null); },
           onConfirm: confirmDeleteWorkspace,
         }) : null,
+        wsPickerOpen ? h(DirPicker, {
+          initial: '',
+          onClose: () => setWsPickerOpen(false),
+          onPick: (picked) => { setWsPickerOpen(false); restoreWorkspace(picked); },
+        }) : null,
         rulesOpen ? h(RulesDialog, {
           cwd: viewSession ? viewSession.cwd : (boot ? boot.defaultCwd : ''),
           provider: viewSession ? viewSession.provider : currentProvider,
@@ -5471,8 +5572,7 @@ button.cw-pill[aria-expanded="true"]{
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
       __parts: { TurnRail, TodoCard, RulesDialog, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
-        try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }
-        try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
+                try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: 'cli-workbench',
