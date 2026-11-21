@@ -159,7 +159,7 @@ window.__ModuleLoader__.load({
        只读与工作区写入都无法真正执行命令。 */
     let codexSandboxState = null;
     const sandboxDeadReason = () => (codexSandboxState && codexSandboxState.detail)
-      || '本机 Codex 沙箱后端不可用，这个档位无法真正执行命令。';
+      || '沙箱不可用，此档位无法执行命令。';
     const unusableMode = (provider, id) => {
       if (provider !== 'codex' || !codexSandboxState) return false;
       if (id === 'workspace-write') return codexSandboxState.workspaceWriteUsable === false;
@@ -1985,7 +1985,7 @@ button.cw-pill[aria-expanded="true"]{
              同样的信息放进 title：需要时 hover 就有，不占正文。 */
           title: failed
             ? '这一步执行失败；错误正文已展开'
-            : 'Codex 无逐工具审批通道：这是执行后的审计记录，不能点允许/拒绝',
+            : '执行后的审计记录，不可审批',
         },
           h('span', { className: 'cw-audit-ic' + (failed ? ' error' : '') }, h(Icon, { name: failed ? 'x' : 'check', size: 13 })),
           h('span', { className: 'cw-audit-title' }, item.name + ' · ' + (item.target || '')),
@@ -2072,7 +2072,7 @@ button.cw-pill[aria-expanded="true"]{
             h('span', { className: 'k' }, '阶段'), h('span', null, item.phase || '未知'),
             h('span', { className: 'k' }, '类别'), h('span', null, item.category || '未知'),
           ),
-          h('div', { className: 'cw-err-note' }, '已生成的内容和文件改动都保留在原位置。会话可恢复：Claude 用 session id、Codex 用 thread id 续聊。'),
+          h('div', { className: 'cw-err-note' }, '已保留的内容和文件改动不会回滚，可直接重试。'),
           h('div', { className: 'cw-ap-actions' },
             h('button', { className: 'cw-btn primary', onClick: onRetry },
               h(Icon, { name: 'refresh', size: 14 }), '重新连接并重试上一条'),
@@ -2100,7 +2100,7 @@ button.cw-pill[aria-expanded="true"]{
       return h('div', { className: 'cw-empty' },
         h('div', { className: 'cw-empty-mark' }, h(Icon, { name: 'grid', size: 25 })),
         h('h2', null, '选一个任务开始'),
-        h('p', null, '当前会话绑定本机的 ' + meta.label + '。描述任务后，界面会实时展示它的思考、改了哪些文件、跑了什么命令。'),
+        h('p', null, '当前绑定本机的 ' + meta.label + '。描述任务即可开始。'),
         h('div', { className: 'cw-tasks' }, tasks.map(([title, desc], index) => h('button', {
           key: index, className: 'cw-task', onClick: () => onPick(desc),
         }, h(Icon, { name: index === 0 ? 'file' : index === 1 ? 'wrench' : 'search', size: 15 }),
@@ -2128,13 +2128,13 @@ button.cw-pill[aria-expanded="true"]{
         h('span', { className: 'name' }, entry.name + (entry.type === 'dir' ? '/' : '')),
         entry.isNew ? h('span', { className: 'new-tag' }, '新') : null,
         ))),
-        h('div', { className: 'cw-filetip' }, '点击文件在「预览」里打开；标「新」的是本会话改过或新建的文件。'),
+        h('div', { className: 'cw-filetip' }, '标「新」的是本会话改过的文件。'),
       );
     }
 
     function PreviewPanel({ preview, onSave, onOpen, onLocate }) {
       if (!preview) {
-        return h('div', { className: 'cw-empty-note' }, '在「文件」里点一个文件，或等 CLI 改动文件后在这里预览。');
+        return h('div', { className: 'cw-empty-note' }, '点「文件」里的文件即可预览。');
       }
       if (preview.error && !preview.dataUrl && !preview.text) {
         return h('div', { className: 'cw-empty-note' }, preview.error);
@@ -2174,7 +2174,7 @@ button.cw-pill[aria-expanded="true"]{
               sandbox: 'allow-scripts allow-popups allow-forms allow-modals',
               srcDoc: String(preview.text || ''),
             }),
-            h('div', { className: 'cw-pv-note' }, '按页面渲染（沙箱 iframe）：脚本可运行，但读不到 DSH 的页面数据。'),
+            h('div', { className: 'cw-pv-note' }, '沙箱渲染：脚本可运行，读不到 DSH 数据。'),
           ) : null,
           isText ? h('div', { className: 'cw-pv-doc' },
             h('pre', { className: 'cw-source cw-pv-code', 'data-lang': preview.lang || '' }, String(preview.text || '')),
@@ -2335,7 +2335,6 @@ button.cw-pill[aria-expanded="true"]{
       ] : (contextUsed > 0 ? [
         ['已用 token', fmtExact(contextUsed)],
         ['窗口', 'CLI 未上报'],
-        ['说明', '只给已用量，不按模型名猜窗口'],
       ] : null);
 
       if (!activityLabel && !usageLabel && !contextLabel) return null;
@@ -2344,13 +2343,13 @@ button.cw-pill[aria-expanded="true"]{
           stat: 'activity', icon: 'gauge', label: activityLabel,
           text: '运行统计：' + activityLabel, detail: activityDetail,
           title: '运行统计', titleValue: counts || '',
-          note: '耗时与速度来自 CLI 事件流的真实计时；「速度」只在能测到解码耗时时显示。',
+          note: '来自 CLI 事件流的计时。',
         }) : null,
         usageLabel ? h(StatPill, {
           stat: 'usage', icon: 'coin', label: usageLabel,
           text: 'token 用量：' + usageLabel, detail: usageDetail,
           title: 'token 用量', titleValue: fmtExact(total) + ' tokens',
-          note: '全部为本机 CLI 上报的真实数字，不估算、不编造剩余额度。',
+          note: 'CLI 上报的真实数字。',
         }) : null,
         contextLabel ? h(StatPill, {
           /* 上下文：有窗口大小时是进度环 + 百分比（跟 DSH 一样是块「表」），
@@ -2359,8 +2358,8 @@ button.cw-pill[aria-expanded="true"]{
           text: '上下文占用：' + contextLabel, detail: contextDetail,
           title: '上下文占用', titleValue: contextPct !== null ? contextPct + '%' : fmtExact(contextUsed) + ' tokens',
           note: contextPct !== null
-            ? '窗口大小由 CLI 上报（Claude 在 result 事件里；Codex 从它自己的 rollout 记录里读）。'
-            : '这个 CLI 没有上报窗口大小，所以只显示已用 token，不猜百分比。',
+            ? '窗口大小由 CLI 上报。'
+            : 'CLI 未上报窗口大小，只显示已用量。',
         }) : null,
       );
     }
@@ -2462,7 +2461,7 @@ button.cw-pill[aria-expanded="true"]{
                 h('span', { className: 'cw-path', title: name }, name),
                 h('button', { className: 'cw-chip sm', onClick: () => onRevokeTool(name) }, '撤销'),
               ))
-              : h('div', { className: 'cw-taskrow' }, '没有长期放行的工具。审批卡中的「本会话都允许」会记录在这里，可随时撤销。'),
+              : h('div', { className: 'cw-taskrow' }, '审批时选「本会话都允许」的工具会出现在这里。'),
           ),
         ),
         h('div', { className: 'cw-sec' },
@@ -2508,7 +2507,7 @@ button.cw-pill[aria-expanded="true"]{
           h('div', { className: 'cw-card' },
             isHtml
               ? h('pre', { className: 'cw-source' }, String(preview.text || '').slice(0, 3000))
-              : h('div', { className: 'cw-page-note' }, '网页里不能内嵌真实浏览器内核，所以这里展示本地页面的源码与地址；需要看渲染结果请用系统浏览器打开。'),
+              : h('div', { className: 'cw-page-note' }, '仅源码预览，看渲染结果请用系统浏览器。'),
           ),
         ),
         isHtml ? h('div', { className: 'cw-pv-actions-text' },
@@ -2598,9 +2597,7 @@ button.cw-pill[aria-expanded="true"]{
             h('b', null, '自定义规则（系统提示词）'),
             h('button', { className: 'cw-iconbtn', onClick: onClose, 'aria-label': '关闭' }, h(Icon, { name: 'x' })),
           ),
-          h('div', { className: 'cw-rules-note' },
-            '不用另设系统提示词：Claude 每次都会读 CLAUDE.md，Codex 每次都会读 AGENTS.md——工作区一份、用户级一份，'
-            + '这就是「写一次、每次都生效」的官方入口。这里只是读写这四个文件，内容原样保存，不替你改写成别的格式。'),
+          h('div', { className: 'cw-rules-note' }, 'CLI 每次会话都会读取这里的文件。'),
           loading
             ? h('div', { className: 'cw-empty-note' }, '正在读取…')
             : h('div', { className: 'cw-rules' },
@@ -2928,7 +2925,7 @@ button.cw-pill[aria-expanded="true"]{
                   h('option', { value: 'elevated' }, 'elevated · 最强隔离，首次运行要管理员授权'),
                 ),
               ),
-              h('div', { className: 'cw-default-note' }, '新建会话会继承这里的档位；已有会话不受影响，可在会话标题栏单独改。'),
+              h('div', { className: 'cw-default-note' }, '只影响新建的会话。'),
               h('div', { className: 'cw-default-note' }, sandboxState
                 ? ('当前 Codex 沙箱后端：' + sandboxState.backend
                   + (sandboxState.override ? '（运行时自动追加 windows.sandbox="' + sandboxState.override + '"）' : '')
@@ -2936,7 +2933,7 @@ button.cw-pill[aria-expanded="true"]{
                 : '正在检测 Codex 沙箱后端…'),
               unusableMode('codex', codexMode)
                 ? h('div', { className: 'cw-default-note', style: { color: 'var(--cw-danger)' } },
-                  '本机 Codex 沙箱后端不可用：只读与工作区写入都无法执行命令。要让 Codex 真正改文件/跑命令，选「完全访问」，或在 Codex 配置 / 系统策略里启用 Windows 沙箱。')
+                  '沙箱不可用：只读/工作区写入无法执行命令。改用「完全访问」或启用 Windows 沙箱。')
                 : null,
               h('button', { className: 'cw-btn primary', onClick: () => onSaveDefaults({ claudeMode, codexMode, codexSandboxBackend: sandboxBackend }) }, '保存默认'),
             ),
@@ -2958,29 +2955,17 @@ button.cw-pill[aria-expanded="true"]{
               query ? h('button', { className: 'cw-chip', style: { height: '20px', padding: '0 5px' }, onClick: () => setQuery('') }, h(Icon, { name: 'x', size: 11 })) : null,
             ) : null,
             h(ArchivedList, { sessions: archived, query, onRestore }),
-            h('div', { className: 'cw-set-note' },
-              '归档的会话从左侧列表隐藏，转录不会删除。Codex 会话使用原生 codex archive；Claude Code 没有原生归档能力，这里是插件内的软归档，claude --resume 仍能看到。',
-            ),
+            h('div', { className: 'cw-set-note' }, '归档只从列表隐藏，转录不会被删除。'),
             archived.length ? h('div', { className: 'cw-arch-actions' },
-              h('span', { className: 'cw-arch-actions-note' }, '可在归档时点「撤销」，或在此取消归档'),
-              h('button', { onClick: onRestoreAll }, '全部取消归档'),
+              h('button', { style: { marginLeft: 'auto' }, onClick: onRestoreAll }, '全部取消归档'),
             ) : null,
             h('div', { className: 'cw-upd-sec' },
               h('div', { className: 'cw-set-title' },
                 h(Icon, { name: 'sparkles', size: 14 }),
                 '技能与计划模式',
               ),
-              h('div', { className: 'cw-set-note' },
-                '技能：输入框左下角会扫描 ~/.claude/skills、~/.codex/skills，以及当前工作区的 .claude/skills、.codex/skills，'
-                + '每个含 SKILL.md 的目录算一个技能。选中后只是把「使用技能 X」和技能说明插进输入框，发不发、怎么用仍然由 CLI 自己决定，'
-                + '插件不替 CLI 编造调用协议。'),
-              h('div', { className: 'cw-set-note' },
-                '计划模式：输入框里的清单图标是一个会话级的「计划」开关。打开后，下一条消息会带上一段计划指令'
-                + '（只出方案、不改文件），发完自动关闭；标题栏会显示「计划中」。它是指令而不是 CLI 的开关键：'
-                + 'Claude 另有真正的 --permission-mode plan 档位（会话标题栏可切），Codex 没有 plan 开关，只能这样驱动。'),
-              h('div', { className: 'cw-set-note' },
-                'Goal：Claude Code 原生支持 /goal 与目标续跑，斜杠菜单里直接放行；Codex 没有 goal 这个概念，'
-                + '这里不提供入口也不会伪造。想用长期目标请在 Claude 会话里发 /goal。'),
+              h('div', { className: 'cw-set-note' }, '技能来自用户级与工作区的 skills 目录。'),
+              h('div', { className: 'cw-set-note' }, '打开计划后，下一条消息只出方案、不改文件。'),
             ),
             h('div', { className: 'cw-upd-sec' },
               h('div', { className: 'cw-set-title' },
@@ -3026,7 +3011,7 @@ button.cw-pill[aria-expanded="true"]{
                   );
                 })
                 : h('div', { className: 'cw-empty-note' }, updates && updates.error ? ('无法检测更新：' + updates.error) : '正在检测最新版本…'),
-              h('div', { className: 'cw-set-note' }, '升级会执行 npm install -g 拉取对应 CLI 的最新稳定版，成功后重启 CLI 进程生效。'),
+              h('div', { className: 'cw-set-note' }, '升级会安装最新稳定版，重启后生效。'),
             ),
             h('div', { className: 'cw-upd-sec' },
               h('div', { className: 'cw-set-title' },
@@ -3037,10 +3022,7 @@ button.cw-pill[aria-expanded="true"]{
                     boot.dataDirSource === 'profile' ? 'profile 目录' : '~/.dsh 回退目录')
                   : null,
               ),
-              h('div', { className: 'cw-set-note' },
-                '这里只存会话列表、工作区分组、归档与置顶、界面用的消息副本。对话本体始终在 CLI 自己的记录里'
-                + '（Claude：~/.claude/projects，Codex：~/.codex/sessions），所以这个目录丢了对话也不会丢，'
-                + '在终端里 claude --resume 照样能接上。'),
+              h('div', { className: 'cw-set-note' }, '只存索引与界面状态，对话本体在 CLI 自己的记录里。'),
               boot && boot.dataDir
                 ? h('div', { className: 'cw-set-note cw-set-path' }, boot.dataDir)
                 : null,
@@ -3154,7 +3136,7 @@ button.cw-pill[aria-expanded="true"]{
         ),
         h('div', { className: 'cw-dlg-body' },
           h('div', { className: 'cw-ws-del-name' }, h(Icon, { name: 'folder', size: 15 }), label),
-          h('div', { className: 'cw-hintline' }, '将把「' + label + '」从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在「未分组」下。'),
+          h('div', { className: 'cw-hintline' }, '只从列表移除；文件夹与会话保留，会话落到「未分组」。'),
           target.others
             ? h('div', { className: 'cw-hintline' }, '注意：这个目录里还有 ' + target.others + ' 个 '
               + providerMeta(target.provider === 'codex' ? 'claude' : 'codex').label
@@ -3239,7 +3221,7 @@ button.cw-pill[aria-expanded="true"]{
                 }),
                 h('button', { className: 'cw-btn', onClick: browse }, h(Icon, { name: 'folder', size: 14 }), '浏览…'),
               ),
-              h('div', { className: 'cw-hintline' }, '工作目录决定会话的文件树、预览与页面根路径。这个目录会作为工作区留在左栏。'),
+              h('div', { className: 'cw-hintline' }, '这个目录会成为左栏的一个工作区。'),
             ),
             h('div', { className: 'cw-field' },
               h('span', { className: 'cw-label' }, '权限（继承默认）'),
@@ -3472,7 +3454,7 @@ button.cw-pill[aria-expanded="true"]{
           h(Icon, { name: 'shield', size: 13 }),
           otherCount
             ? '另有 ' + otherCount + ' 个 ' + providerMeta(provider === 'codex' ? 'claude' : 'codex').label + ' 会话，切到顶部查看'
-            : '会话恢复：Claude session id / Codex thread id',
+            : '会话可恢复',
         ),
       );
     }
@@ -4610,13 +4592,12 @@ button.cw-pill[aria-expanded="true"]{
         h('div', { className: 'cw-pop-title' }, picker.kind === 'file' ? '引用项目文件' : picker.kind === 'skill' ? '技能（' + providerMeta(currentProvider).label + '）' : 'CLI 斜杠命令'),
         picker.kind === 'skill' && picker.items.length === 0
           ? h('div', { className: 'cw-pop-note' },
-            providerMeta(currentProvider).label + ' 侧没有读到任何技能。技能是一个含 SKILL.md 的目录，'
-            + '工作台会扫这些位置：'
+            '没有找到技能（需含 SKILL.md 的目录），扫描位置：'
             + ((picker.ownDirs || []).map((dir) => dir.label + (dir.exists ? '（存在，' + dir.count + ' 个）' : '（不存在）')).join(' / ')
               || (picker.missingDirs || []).join(' / ')))
           : null,
         picker.kind === 'skill' && picker.items.some((item) => item.skill && !item.skill.hasDescription)
-          ? h('div', { className: 'cw-pop-note' }, '标「无描述」的技能，SKILL.md 里没有 description 字段；照样能用，只是列表里不好认。')
+          ? h('div', { className: 'cw-pop-note' }, 'SKILL.md 未写描述，不影响使用。')
           : null,
         picker.kind !== 'skill' && picker.items.length === 0 ? h('div', { className: 'cw-pop-title' }, '没有可选项') : null,
         picker.items.map((item) => h('button', {
@@ -4996,7 +4977,7 @@ button.cw-pill[aria-expanded="true"]{
                       h('button', {
                         type: 'button',
                         className: 'cw-pillbtn' + (picker && picker.kind === 'skill' ? ' is-open' : ''),
-                        title: '技能（本地 ~/.claude、~/.codex 与工作区的 skills）',
+                        title: '技能（本地与工作区的 skills）',
                         'aria-label': '选择技能',
                         onClick: () => openPicker('skill'),
                       }, h(Icon, { name: 'skill' }), '技能'),
@@ -5215,7 +5196,7 @@ button.cw-pill[aria-expanded="true"]{
           busy: Boolean(modelBox.busy),
           error: modelBox.error,
           placeholder: currentProvider === 'codex' ? '例如 gpt-5-codex' : '例如 claude-sonnet-4-5',
-          hint: '只存在这个插件里，不改 CLI 的全局配置；列表里最多 20 个。',
+          hint: '只对工作台生效，最多 20 个。',
           onChange: (value) => setModelBox({ ...modelBox, value, error: '' }),
           onCancel: () => { if (!modelBox.busy) setModelBox(null); },
           onConfirm: addCustomModel,
