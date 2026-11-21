@@ -208,7 +208,8 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 
 ## 数据与隐私
 
-- 会话记录保存在当前 DSH profile 的数据目录 `cli-workbench/sessions.json`，只在本机。
+- 会话记录保存在当前 DSH profile 的数据目录：`cli-workbench/state.json`（工作区清单）+ `cli-workbench/sessions/<会话 id>.json`（一个会话一个文件），只在本机。
+- 一个会话一个文件的好处：改一个会话只重写它自己那份；某个文件损坏只影响那一个会话，不会像单文件那样整份读不出来。旧版本的 `sessions.json` 会在升级时自动迁移，并改名成 `sessions.json.migrated-<时间>` 保留，随时可以改回去。
 - CLI 进程由本机 `claude` / `codex` 可执行文件启动，环境变量沿用当前 DSH 进程；不会上传会话内容到第三方。
 - Claude 会话复用同一个 CLI 进程以支持多轮；空闲 10 分钟后进程会被回收，下一条消息用 `--resume` 恢复；删除会话或卸载插件会终止对应进程。
 - 审批超时（5 分钟）自动拒绝，避免进程一直挂着。

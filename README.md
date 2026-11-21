@@ -109,11 +109,16 @@
 
 ```
 <数据目录>/cli-workbench/
-├── sessions.json     会话、工作区、归档状态、界面用的消息副本
+├── state.json        工作区清单与时间戳
+├── sessions/         一个会话一个文件（<会话 id>.json）
 ├── settings.json     新建会话的默认权限 / 沙箱档位
 ├── operations.log    增删操作的排查日志（只在排查时看，界面不显示）
 └── mcp/              Claude 审批桥运行时的临时配置
 ```
+
+**一个会话一个文件**：改一个会话只重写它自己那份，单个文件损坏也只丢那一个会话。
+从旧版本升级时，原来的 `sessions.json` 会被自动迁移，并改名成
+`sessions.json.migrated-<时间>` 保留，不删除——想回退，把它改回 `sessions.json` 即可。
 
 `operations.log` 每行一条 JSON，记录启动、工作区的新增 / 移除 / 改名、会话的新建 / 删除，
 超过 256KB 自动只留最近 500 行。出问题想知道「这行怎么没了」时，直接看这个文件。

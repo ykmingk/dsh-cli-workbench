@@ -471,6 +471,13 @@ function dataDirectory() {
   candidates.push({ dir: path.join(os.homedir(), '.dsh', 'cli-workbench'), source: 'home-fallback' });
 
   const freshness = (dir) => {
+    /* 新布局：state.json 记着 savedAt。老布局是单个 sessions.json。
+       两种都算「这个目录有数据」，比较的是时间戳，取新的那个。 */
+    try {
+      const state = JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8'));
+      const savedAt = Number(state && state.savedAt) || 0;
+      if (savedAt) return { at: savedAt, has: true };
+    } catch { /* 没有新布局 */ }
     const file = path.join(dir, 'sessions.json');
     let parsed;
     try { parsed = JSON.parse(readFileSync(file, 'utf8')); }
@@ -524,7 +531,17 @@ class Workbench {
     // 数据目录的来源（profile / home-fallback）：换启动方式导致「会话不见了」时，
     // 这是唯一能一眼看出来的线索，所以随 /status 暴露给设置面板。
     this.dataDirSource = picked.source;
-    this.file = path.join(this.dir, 'sessions.json');
+    /* 存储布局（v3）：
+         state.json           —— 工作区清单与时间戳（很小，每次写都无妨）
+         sessions/<id>.json   —— 一个会话一个文件
+       旧布局的单文件 sessions.json 仍会被读取，并在首次启动时迁移成新布局，
+       原文件改名成 sessions.json.migrated-<时间> 留作备份，不删除。 */
+    this.stateFile = path.join(this.dir, 'state.json');
+    this.sessionsDir = path.join(this.dir, 'sessions');
+    this.legacyFile = path.join(this.dir, 'sessions.json');
+    // 每个会话上次落盘的内容：内容没变就不重写文件
+    this.serialized = new Map();
+    this.lastState = '';
     this.settingsFile = path.join(this.dir, 'settings.json');
     this.mcpDir = path.join(this.dir, 'mcp');
     this.sessions = new Map();
@@ -603,12 +620,32 @@ class Workbench {
 
   load() {
     try {
-      if (!existsSync(this.file)) return;
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8'));
+      /* 先读新布局。一个会话一个文件：单个文件坏了只丢那一个会话，
+         不会像旧布局那样整份解析失败、连累全部。 */
+      let storedWorkspaces = null;
+      if (existsSync(this.stateFile)) {
+        const state = JSON.parse(readFileSync(this.stateFile, 'utf8'));
+        if (state && Array.isArray(state.workspaces)) storedWorkspaces = state.workspaces;
+      }
+      const list = [];
+      let legacy = null;
+      if (existsSync(this.sessionsDir)) {
+        for (const name of readdirSync(this.sessionsDir)) {
+          if (!name.endsWith('.json')) continue;
+          const full = path.join(this.sessionsDir, name);
+          try { list.push(JSON.parse(readFileSync(full, 'utf8'))); }
+          catch { try { renameSync(full, full + '.broken-' + now()); } catch { /* ignore */ } }
+        }
+      }
+      // 旧布局（单文件）：读出来之后走一次迁移
+      if (!list.length && existsSync(this.legacyFile)) {
+        legacy = JSON.parse(readFileSync(this.legacyFile, 'utf8'));
+        if (Array.isArray(legacy.sessions)) list.push(...legacy.sessions);
+        if (storedWorkspaces === null && Array.isArray(legacy.workspaces)) storedWorkspaces = legacy.workspaces;
+      }
       // A state file written before workspaces existed has no `workspaces` key
       // (as opposed to an empty list, which is a real user choice after deleting
       // every workspace). Only the missing key seeds the registry from sessions.
-      const storedWorkspaces = Array.isArray(parsed.workspaces) ? parsed.workspaces : null;
       for (const raw of storedWorkspaces || []) {
         if (!raw || typeof raw !== 'object') continue;
         const dir = realCwd(text(raw.cwd));
@@ -619,7 +656,6 @@ class Workbench {
           addedAt: Number(raw.addedAt) || now(),
         });
       }
-      const list = Array.isArray(parsed.sessions) ? parsed.sessions : [];
       for (const raw of list) {
         if (!raw || typeof raw !== 'object' || !raw.id) continue;
         const session = {
@@ -679,9 +715,17 @@ class Workbench {
         }
         if (this.workspaces.size) this.scheduleSave();
       }
+      /* 迁移：旧单文件 → 新布局。原文件改名保留（不删），
+         万一新布局有问题，把 .migrated-* 改回去就能回到旧版本。 */
+      if (legacy) {
+        try { renameSync(this.legacyFile, this.legacyFile + '.migrated-' + now()); } catch { /* ignore */ }
+        this.save(true);
+        this.logOperation('migrate', { sessions: this.sessions.size, workspaces: this.workspaces.size });
+      }
     } catch (error) {
       try {
-        if (existsSync(this.file)) renameSync(this.file, this.file + '.broken-' + now());
+        const target = existsSync(this.stateFile) ? this.stateFile : this.legacyFile;
+        if (existsSync(target)) renameSync(target, target + '.broken-' + now());
       } catch { /* ignore */ }
     }
   }
@@ -695,28 +739,60 @@ class Workbench {
     }, 400);
   }
 
-  save() {
+  /**
+   * 内存态 → 持久态的投影。
+   *
+   * session 上挂着 _reapTimer（Timeout 对象，含循环引用）、_mcpToken、_textIds 等
+   * 私有字段，直接展开会让 JSON.stringify 抛异常，而异常被吞掉就会静默停止更新
+   * （删掉的会话重启后复活、退出时丢全部会话）。这里按前缀统一剥离。
+   */
+  persistCopy(session) {
+    const copy = { ...session };
+    for (const key of Object.keys(copy)) {
+      if (key.charCodeAt(0) === 95 /* _ */) delete copy[key];
+    }
+    copy.pending = null;
+    copy.pendingQueue = [];
+    copy.items = session.items.slice(-MAX_ITEMS);
+    return copy;
+  }
+
+  /**
+   * 落盘。新布局下：
+   *   - 每个会话一个文件，**内容没变就不重写**（serialized 里存着上次的文本）；
+   *   - 已经删掉的会话，对应文件也删掉；
+   *   - 工作区等全局状态写进 state.json（很小，每次都写）。
+   * @param {boolean} [force] 无视内容比对，全部重写（迁移/修复时用）
+   */
+  save(force) {
     try {
       this.dirty = false;
-      mkdirSync(this.dir, { recursive: true });
-      const sessions = [...this.sessions.values()].map((session) => {
-        // 内存态与持久态必须分开：session 上挂着 _reapTimer（Timeout 对象，含循环
-        // 引用）、_mcpToken、_textIds 等私有字段，直接展开会让 JSON.stringify 抛异常，
-        // 而异常被下面的 catch 吞掉 → 整份 sessions.json 静默停止更新（删掉的会话
-        // 重启后复活、退出时丢全部会话）。这里按前缀统一剥离，新增私有字段无需再记清单。
-        const copy = { ...session };
-        for (const key of Object.keys(copy)) {
-          if (key.charCodeAt(0) === 95 /* _ */) delete copy[key];
+      mkdirSync(this.sessionsDir, { recursive: true });
+      for (const session of this.sessions.values()) {
+        const payload = JSON.stringify(this.persistCopy(session));
+        if (!force && this.serialized.get(session.id) === payload) continue;
+        const target = path.join(this.sessionsDir, session.id + '.json');
+        const tmp = target + '.tmp';
+        writeFileSync(tmp, payload);
+        renameSync(tmp, target);
+        this.serialized.set(session.id, payload);
+      }
+      try {
+        for (const name of readdirSync(this.sessionsDir)) {
+          if (!name.endsWith('.json')) continue;
+          const id = name.slice(0, -'.json'.length);
+          if (this.sessions.has(id)) continue;
+          rmSync(path.join(this.sessionsDir, name), { force: true });
+          this.serialized.delete(id);
         }
-        copy.pending = null;
-        copy.pendingQueue = [];
-        copy.items = session.items.slice(-MAX_ITEMS);
-        return copy;
-      });
-      const payload = JSON.stringify({ version: 2, savedAt: now(), workspaces: this.workspaceList(), sessions });
-      const tmp = this.file + '.tmp';
-      writeFileSync(tmp, payload);
-      renameSync(tmp, this.file);
+      } catch { /* 清理失败不影响本次写入 */ }
+      const state = JSON.stringify({ version: 3, savedAt: now(), workspaces: this.workspaceList() }, null, 2);
+      if (force || state !== this.lastState) {
+        const tmp = this.stateFile + '.tmp';
+        writeFileSync(tmp, state);
+        renameSync(tmp, this.stateFile);
+        this.lastState = state;
+      }
       this.saveError = null;
     } catch (error) {
       // 写盘失败不能打断一回合，但也不能一声不吭——把原因留下来供 /status 查看。
@@ -1388,6 +1464,11 @@ class Workbench {
       run('codex delete "' + session.codexThreadId + '"').catch(() => {});
     }
     this.sessions.delete(session.id);
+    // 会话文件立刻删除，不等下一次延迟写盘（否则期间崩溃会让它「复活」）
+    try {
+      rmSync(path.join(this.sessionsDir, session.id + '.json'), { force: true });
+      this.serialized.delete(session.id);
+    } catch { /* ignore */ }
     const set = this.streams.get(session.id);
     if (set) { for (const res of set) { try { res.end(); } catch { /* ignore */ } } this.streams.delete(session.id); }
     this.scheduleSave();
@@ -1557,9 +1638,15 @@ class Workbench {
       // 'profile' = 用了 <DSH_PROFILE_DIR>/cli-workbench；'home-fallback' = 用了 ~/.dsh/cli-workbench。
       // 两种启动方式不同时会指向不同目录，这个字段让「会话看起来没了」有据可查。
       dataDirSource: this.dataDirSource,
-      // 最近一次 sessions.json 写盘失败的原因（成功时为 null）。写盘失败不会打断
+      // 最近一次写盘失败的原因（成功时为 null）。写盘失败不会打断
       // 回合，但必须能查到——否则「改了没保住」只会表现为重启后数据回退。
-      storage: { saveError: this.saveError || null },
+      storage: {
+        saveError: this.saveError || null,
+        // 实例号：同一进程里若出现两个实例，它们各自持有内存状态并互相覆盖文件。
+        // 连续两次请求对比它，就能确认是不是同一个实例在服务。
+        instance: this.instanceId,
+        layout: 3,
+      },
     };
     this.statusCache = { at: now(), value };
     return value;
