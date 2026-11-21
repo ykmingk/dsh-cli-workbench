@@ -39,12 +39,32 @@ const TOOL = {
   },
 };
 
-async function requestDecision(args) {
+/* 正在等用户决定的请求：id → { controller, toolUseId }。
+   Claude 取消某个工具调用时会发 notifications/cancelled，必须同时撤掉 Host 侧的审批卡，
+   否则那张卡会一直挂到 5 分钟超时，期间排在后面的审批也展示不出来。 */
+const inFlight = new Map();
+const CANCEL_ENDPOINT = endpoint.replace(/\/permission$/, '/permission/cancel');
+
+function notifyCancel(sessionIdValue, toolUseId) {
+  if (!CANCEL_ENDPOINT || CANCEL_ENDPOINT === endpoint) return;
+  fetch(CANCEL_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-cli-wb-token': token },
+    body: JSON.stringify({ sessionId: sessionIdValue, toolUseId }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => { /* Host 不在也无所谓：审批会按超时自然作废 */ });
+}
+
+async function requestDecision(args, signal) {
   if (!endpoint || !token) {
     return { behavior: 'deny', message: '审批服务未配置，已自动拒绝。' };
   }
   let response;
   try {
+    const timeout = AbortSignal.timeout(330000);
+    const combined = signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([signal, timeout])
+      : timeout;
     response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-cli-wb-token': token },
@@ -54,9 +74,12 @@ async function requestDecision(args) {
         input: args.input && typeof args.input === 'object' ? args.input : {},
         toolUseId: String(args.tool_use_id || ''),
       }),
-      signal: AbortSignal.timeout(330000),
+      signal: combined,
     });
   } catch (error) {
+    if (error && error.name === 'AbortError') {
+      return { behavior: 'deny', message: 'CLI 已取消这次工具调用。' };
+    }
     return { behavior: 'deny', message: '审批请求失败：' + (error && error.name === 'TimeoutError' ? '等待超时' : String(error)) };
   }
   if (!response.ok) {
@@ -88,7 +111,17 @@ function handle(message) {
     });
     return;
   }
-  if (method === 'notifications/initialized' || method === 'notifications/cancelled') return;
+  if (method === 'notifications/initialized') return;
+  if (method === 'notifications/cancelled') {
+    const requestId = params && (params.requestId ?? params.request_id);
+    const entry = requestId !== undefined ? inFlight.get(requestId) : null;
+    if (entry) {
+      inFlight.delete(requestId);
+      try { entry.controller.abort(); } catch { /* already settled */ }
+      notifyCancel(sessionId, entry.toolUseId);
+    }
+    return;
+  }
   if (method === 'ping') {
     reply(id, {});
     return;
@@ -99,12 +132,19 @@ function handle(message) {
   }
   if (method === 'tools/call') {
     const args = (params && params.arguments) || {};
-    requestDecision(args).then(
-      (decision) => reply(id, { content: [{ type: 'text', text: JSON.stringify(decision) }] }),
-      (error) => reply(id, {
-        content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: String(error) }) }],
-        isError: true,
-      }),
+    const controller = new AbortController();
+    const toolUseId = String(args.tool_use_id || '');
+    if (id !== undefined && id !== null) inFlight.set(id, { controller, toolUseId });
+    const settle = () => { if (id !== undefined && id !== null) inFlight.delete(id); };
+    requestDecision(args, controller.signal).then(
+      (decision) => { settle(); reply(id, { content: [{ type: 'text', text: JSON.stringify(decision) }] }); },
+      (error) => {
+        settle();
+        reply(id, {
+          content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: String(error) }) }],
+          isError: true,
+        });
+      },
     );
     return;
   }

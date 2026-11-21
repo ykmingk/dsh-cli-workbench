@@ -867,7 +867,10 @@ class Workbench {
   push(session, item) {
     // 回合阶段：客户端用它区分「还在拉起 CLI」「已连上等首字」「在执行工具」。
     // 只有真正产出内容的两种条目推进它，user/notice/error 不改状态。
-    if (item.kind === 'tool') session._turnPhase = 'tool';
+    if (item.kind === 'tool') {
+      session._turnPhase = 'tool';
+      session._turnSteps = (Number(session._turnSteps) || 0) + 1;
+    }
     else if (item.kind === 'assistant' || item.kind === 'thinking') session._turnPhase = 'streaming';
     session.items.push(item);
     if (session.items.length > MAX_ITEMS) {
@@ -899,6 +902,9 @@ class Workbench {
     if (!set || set.size === 0) return;
     const payload = 'data: ' + JSON.stringify(event) + '\n\n';
     for (const res of set) {
+      // 对已断开的连接调用 write 是**异步**报错，try/catch 拦不住；没有 error 监听
+      // 就会以 uncaughtException 击穿整个宿主。先看状态，剩余异常由 attachStream 兜底。
+      if (res.writableEnded || res.destroyed) { set.delete(res); continue; }
       try { res.write(payload); } catch { set.delete(res); }
     }
   }
@@ -924,6 +930,30 @@ class Workbench {
 
   /* -------------------------------------------------------------- routing */
 
+  /**
+   * 拒绝跨站写请求。
+   *
+   * 这些路由没有会话鉴权，而本机任意网页都能用 `Content-Type: text/plain` 的
+   * no-cors 请求绕过 CORS 预检直接打进来（改写 CLAUDE.md、驱动 /open 等都是这个口子）。
+   * 浏览器对跨站请求一定带 Origin / Sec-Fetch-Site，非浏览器客户端（审批桥、curl）
+   * 不带 —— 所以：带了 Origin 且不是本机同端口，就拒绝。
+   */
+  crossSite(req) {
+    if (req.headers['sec-fetch-site'] === 'cross-site') return true;
+    const origin = req.headers.origin;
+    if (!origin) return false;
+    try {
+      const parsed = new URL(origin);
+      const self = new URL(this.ctx.webServer.getOrigin());
+      const loopback = (host) => host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+      // 本机回环之间只比端口：用户可能用 localhost 打开、插件注册的是 127.0.0.1。
+      if (loopback(parsed.hostname) && loopback(self.hostname)) return parsed.port !== self.port;
+      return parsed.origin !== self.origin;
+    } catch {
+      return true;
+    }
+  }
+
   async handle(req, res) {
     let url;
     try {
@@ -934,6 +964,11 @@ class Workbench {
     if (!url.pathname.startsWith(API)) {
       res.statusCode = 404;
       res.end('not found');
+      return;
+    }
+    // 只拦写操作：GET 的响应没有 CORS 头，跨站读不到内容，改动它反而容易误伤。
+    if (req.method !== 'GET' && req.method !== 'HEAD' && this.crossSite(req)) {
+      try { json(res, 403, { error: '跨站请求已拒绝' }); } catch { /* headers sent */ }
       return;
     }
     const route = url.pathname.slice(API.length) || '/';
@@ -1009,6 +1044,17 @@ class Workbench {
     if (route === '/preview' && method === 'GET') {
       const file = text(url.searchParams.get('path') || '');
       const lines = Number(url.searchParams.get('lines')) || 0;
+      // 带 session 时按会话工作区边界校验；不带时要求落在任一已注册工作区内。
+      // 否则这个端点能读本机任意文件（和 /fs/file 的 403 边界不一致）。
+      const sessionId = text(url.searchParams.get('session') || '');
+      if (sessionId) {
+        const session = this.session(sessionId);
+        if (!session) return json(res, 404, { error: 'session not found' });
+        const safe = this.safePath(session, file);
+        if (!safe) return json(res, 403, { error: 'path outside workspace' });
+        return json(res, 200, this.previewAny(safe, lines));
+      }
+      if (!this.withinAnyWorkspace(file)) return json(res, 403, { error: 'path outside workspace' });
       return json(res, 200, this.previewAny(file, lines));
     }
     if (route === '/sessions' && method === 'GET') {
@@ -1134,6 +1180,10 @@ class Workbench {
       const body = await readBody(req);
       return this.handlePermission(req, res, body);
     }
+    if (route === '/permission/cancel' && method === 'POST') {
+      const body = await readBody(req);
+      return this.cancelPermission(req, res, body);
+    }
     if (route === '/fs/tree' && method === 'GET') {
       const session = this.session(url.searchParams.get('session') || '');
       if (!session) return json(res, 404, { error: 'session not found' });
@@ -1214,17 +1264,39 @@ class Workbench {
     }
     if (typeof body.archived === 'boolean' && body.archived !== session.archived) {
       session.archived = body.archived;
+      const native = session.provider === 'codex' && Boolean(session.codexThreadId);
       if (body.archived) {
-        session.archivedKind = session.provider === 'codex' && session.codexThreadId
-          ? '原生归档 · codex archive'
-          : '软归档 · CLI resume 仍可见';
-        if (session.provider === 'codex' && session.codexThreadId) {
-          run('codex archive "' + session.codexThreadId + '"').catch(() => {});
+        session.archivedKind = native ? '原生归档 · codex archive' : '软归档 · CLI resume 仍可见';
+        if (native) {
+          // 原生命令可能根本不存在（旧版 Codex）或执行失败。原来 .catch(() => {}) 吞掉，
+          // 界面却照旧写「原生归档」。这里按真实结果回填，失败就说清楚是软归档。
+          const thread = session.codexThreadId;
+          run('codex archive "' + thread + '"').then((result) => {
+            if (result && result.code === 0) return;
+            session.archivedKind = '软归档 · 原生命令失败';
+            session.advisories = (Array.isArray(session.advisories) ? session.advisories : [])
+              .concat([{ kind: 'archive', text: 'codex archive 未成功：' + oneLine(text(result && result.stderr) || '无输出', 160), at: now() }])
+              .slice(-8);
+          }).catch(() => {
+            session.archivedKind = '软归档 · 原生命令失败';
+          }).finally(() => {
+            this.sessionEvent(session);
+            this.save();
+          });
         }
       } else {
         session.archivedKind = '';
-        if (session.provider === 'codex' && session.codexThreadId) {
-          run('codex unarchive "' + session.codexThreadId + '"').catch(() => {});
+        if (native) {
+          const thread = session.codexThreadId;
+          run('codex unarchive "' + thread + '"').then((result) => {
+            if (result && result.code === 0) return;
+            session.advisories = (Array.isArray(session.advisories) ? session.advisories : [])
+              .concat([{ kind: 'archive', text: 'codex unarchive 未成功：' + oneLine(text(result && result.stderr) || '无输出', 160), at: now() }])
+              .slice(-8);
+          }).catch(() => {}).finally(() => {
+            this.sessionEvent(session);
+            this.save();
+          });
         }
       }
     }
@@ -1566,6 +1638,8 @@ class Workbench {
     };
     req.on('close', close);
     res.on('close', close);
+    // 断连后 write 的失败是异步 error 事件；这个监听必须存在，否则就是 uncaughtException。
+    res.on('error', close);
   }
 
   /* ------------------------------------------------------------ send/stop */
@@ -1727,6 +1801,9 @@ class Workbench {
     session._turnActive = true;
     session._turnStartedAt = now();
     session._turnPhase = 'spawn';
+    session._turnSteps = 0;
+    // 上一轮「停止」留下的强杀定时器必须作废，否则它会杀掉这一轮的新进程。
+    if (session._interruptTimer) { clearTimeout(session._interruptTimer); session._interruptTimer = null; }
     session._turnTiming = { decodeMs: 0, ttftMs: null, blockStart: null };
     const title = session.title === '新会话' || !session.title;
     if (title) session.title = oneLine(content, 36);
@@ -1768,7 +1845,11 @@ class Workbench {
           type: 'control_request', request_id: idOf('int'), request: { subtype: 'interrupt' },
         }) + '\n');
       } catch { /* fall through to kill */ }
-      setTimeout(() => {
+      // 句柄挂在 session 上，下一条消息会取消它：否则「停止」后 2.5 秒内续发，
+      // 这个定时器会把正在跑新回合的进程直接杀掉，新回合无辜报「进程异常退出」。
+      clearTimeout(session._interruptTimer);
+      session._interruptTimer = setTimeout(() => {
+        session._interruptTimer = null;
         if (child.exitCode == null) {
           killTree(child);
           if (this.procs.get(session.id) === child) this.procs.delete(session.id);
@@ -2031,8 +2112,9 @@ class Workbench {
         // itself: tokens/second is only shown when this exists, never guessed.
         decodeMs: turn ? Math.round(turn.decodeMs) : 0,
         ttftMs: turn && turn.ttftMs != null ? Math.round(turn.ttftMs) : null,
-        turns: Number(session._turns) || 1,
-        steps: (Number(session._turns) || 1) + (Number(session._toolSteps) || 0),
+        // 本轮序号 = 已完成的轮数 + 1（原来的写法在自增之前取值，第二轮起永远少 1）
+        turns: (Number(session._turns) || 0) + 1,
+        steps: Number(session._turnSteps) || 0,
       };
       session._turnActive = false;
       session._turnPhase = null;
@@ -2321,8 +2403,8 @@ class Workbench {
         // absent rather than being derived from wall time that includes tools.
         decodeMs: 0,
         ttftMs: null,
-        turns: Number(session._codexTurns) || 1,
-        steps: (Number(session._codexTurns) || 1) + (Number(session._toolSteps) || 0),
+        turns: (Number(session._codexTurns) || 0) + 1,
+        steps: Number(session._turnSteps) || 0,
       };
       session._turnActive = false;
       session._turnPhase = null;
@@ -2413,10 +2495,13 @@ class Workbench {
       for (const change of changes) {
         const filePath = text(change.path);
         if (!filePath) continue;
-        const patch = text(change.kind) === 'delete' ? 0 : 1;
+        // Codex 的 file_change 只说「这个文件变了」，不给增删行数。
+        // 原来按 kind 编了个 +1，删除还会被记成 +1 新增、removed 永远是 0。
+        // 这里只如实记录变化种类，不编造行数（界面上只用文件数，不展示 ±N）。
+        const kind = text(change.kind) || 'update';
         const existingFile = session.files.find((file) => file.path === filePath);
-        if (existingFile) { existingFile.added += patch; existingFile.at = now(); }
-        else session.files.push({ path: filePath, added: patch, removed: 0, at: now() });
+        if (existingFile) { existingFile.kind = kind; existingFile.at = now(); }
+        else session.files.push({ path: filePath, kind, at: now() });
       }
       this.push(session, {
         id: 'codex-' + id, kind: 'filechange', files: paths, status: item.status === 'completed' ? 'done' : 'running',
@@ -2465,6 +2550,34 @@ class Workbench {
   }
 
   /* ------------------------------------------------------------ approvals */
+
+  /**
+   * CLI 侧取消了某个工具调用（notifications/cancelled）时，把对应的审批一并作废。
+   * 不做这件事，用户会看到一张已经没有意义的审批卡，并且要等满 APPROVAL_TIMEOUT
+   * （5 分钟）才被自动拒绝，期间队列里后面的审批也轮不到。
+   */
+  cancelPermission(req, res, body) {
+    const session = this.session(text(body.sessionId));
+    if (!session) return json(res, 404, { ok: false });
+    const token = req.headers['x-cli-wb-token'];
+    if (session._mcpToken && token !== session._mcpToken) {
+      return json(res, 403, { ok: false, error: '审批令牌无效' });
+    }
+    const toolUseId = text(body.toolUseId);
+    const candidates = [session.pending, ...session.pendingQueue].filter(Boolean);
+    const found = toolUseId
+      ? candidates.find((entry) => entry.toolUseId === toolUseId)
+      : candidates[0];
+    if (!found) return json(res, 200, { ok: false, reason: 'no pending approval' });
+    const entry = this.approvals.get(found.requestId);
+    if (entry) {
+      clearTimeout(entry.timer);
+      this.approvals.delete(found.requestId);
+      entry.resolve({ behavior: 'deny', message: 'CLI 已取消这次工具调用，审批作废。' });
+    }
+    this.removePending(session, found.requestId);
+    return json(res, 200, { ok: true });
+  }
 
   async handlePermission(req, res, body) {
     const session = this.session(text(body.sessionId));
@@ -2584,6 +2697,24 @@ class Workbench {
     if (baseNorm === rootNorm) return base;
     if (baseNorm.startsWith(rootNorm + path.sep)) return base;
     return null;
+  }
+
+  /** /preview 没带 session 时的兜底边界：目标必须落在某个已注册工作区目录内。 */
+  withinAnyWorkspace(input) {
+    const raw = text(input);
+    if (!raw) return false;
+    let target;
+    try { target = realpathSync.native ? realpathSync.native(raw) : realpathSync(raw); } catch { return false; }
+    const lower = target.toLowerCase();
+    for (const entry of this.workspaces.values()) {
+      const root = String(entry.cwd || '');
+      if (!root) continue;
+      let rootReal;
+      try { rootReal = realpathSync.native ? realpathSync.native(root) : realpathSync(root); } catch { rootReal = path.resolve(root); }
+      const rootLower = rootReal.toLowerCase();
+      if (lower === rootLower || lower.startsWith(rootLower + path.sep)) return true;
+    }
+    return false;
   }
 
   tree(session, root, depth) {

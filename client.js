@@ -678,6 +678,15 @@ window.__ModuleLoader__.load({
 /* 定位层：占满中栏剩余高度，内部才是真正滚动的 .cw-scroll。
    「回到最新」和轮次条都挂在这一层，所以永远钉在右下角，不会被内容带着走。 */
 .cw-viewport{ position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* SSE 断线提示：出现即代表界面数据可能滞后，重连成功自动消失 */
+.cw-offline{
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 6px 14px; font-size: var(--cw-fs-xs); color: var(--cw-subtle);
+  background: var(--cw-hover); box-shadow: inset 0 -0.5px 0 var(--cw-border);
+}
+/* 行内链接（助手输出里的 markdown 链接） */
+.inline-link{ color: var(--cw-running); text-decoration: none; border-bottom: .5px solid currentColor; }
+.inline-link:hover{ opacity: .8; }
 .cw-scroll{ flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px 10px; }
 
 /* —— 轮次条：会话右侧的短横刻度，悬停看那条消息，点一下跳过去 ——
@@ -1715,6 +1724,19 @@ button.cw-pill[aria-expanded="true"]{
         const token = match[0];
         if (token.startsWith('`')) {
           nodes.push(h('code', { key: 'c' + key++, className: 'inline' }, token.slice(1, -1)));
+        } else if (token.startsWith('[')) {
+          /* 链接：原来的 else 分支会把 `[文字](网址)` 当成加粗，slice(2,-2) 之后
+             显示成「字](网」这样的乱码。只在 http(s) 下渲染成可点链接。 */
+          const link = /^\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
+          if (!link) {
+            nodes.push(token);
+          } else {
+            const label = link[1] || link[2];
+            const href = link[2].trim();
+            nodes.push(/^https?:\/\//i.test(href)
+              ? h('a', { key: 'a' + key++, className: 'inline-link', href, target: '_blank', rel: 'noreferrer noopener' }, label)
+              : h('span', { key: 'a' + key++ }, label + ' (' + href + ')'));
+          }
         } else {
           nodes.push(h('strong', { key: 'b' + key++ }, token.slice(2, -2)));
         }
@@ -3093,7 +3115,10 @@ button.cw-pill[aria-expanded="true"]{
             value,
             placeholder: placeholder || '',
             onChange: (event) => onChange(event.target.value),
-            onKeyDown: (event) => { if (event.key === 'Enter') onConfirm(); },
+            onKeyDown: (event) => {
+              if (event.nativeEvent && event.nativeEvent.isComposing) return;
+              if (event.key === 'Enter') onConfirm();
+            },
             spellCheck: false,
             'aria-label': label,
           }),
@@ -3472,6 +3497,9 @@ button.cw-pill[aria-expanded="true"]{
       /* 顶部选中的助手决定整个工作台的范围：左栏、新建会话、空态、文件树都跟着它走。 */
       const [topProvider, setTopProvider] = useState('claude');
       const [detail, setDetail] = useState(null);
+      /* 'live' = SSE 通着；'retrying' = 断了并在退避重连。界面要如实说，
+         否则断线期间看起来和正常一样，用户在等一个永远不会来的回复。 */
+      const [streamState, setStreamState] = useState('live');
       const [tick, setTick] = useState(0);
       const [query, setQuery] = useState('');
       /* 计划模式开关：不是 CLI 的 flag，而是发消息时给正文前面加一段计划指令。
@@ -3715,23 +3743,31 @@ button.cw-pill[aria-expanded="true"]{
       useEffect(() => {
         if (!currentId) { setDetail(null); return undefined; }
         let aborted = false;
-        const controller = new AbortController();
+        let controller = new AbortController();
+        let attempt = 0;
+        let retryTimer = null;
         api('/sessions/' + encodeURIComponent(currentId)).then((result) => {
           if (!aborted) setDetail({ session: result.session, items: result.items || [] });
         }).catch(() => {});
         const connect = async () => {
+          while (!aborted) {
           try {
+            controller = new AbortController();
             const response = await fetch(API + '/sessions/' + encodeURIComponent(currentId) + '/stream', {
               signal: controller.signal,
               headers: { accept: 'text/event-stream' },
             });
             if (!response.ok || !response.body) throw new Error('stream unavailable');
+            attempt = 0;
+            setStreamState('live');
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
             while (!aborted) {
               const { value, done } = await reader.read();
-              if (done) break;
+              // 干净关闭（代理超时、Host 优雅断开）与异常一样要重连：
+              // 原来直接 break 会让界面静默冻结在旧状态，用户完全无感知。
+              if (done) throw new Error('stream closed');
               buffer += decoder.decode(value, { stream: true });
               let index;
               while ((index = buffer.indexOf('\n\n')) >= 0) {
@@ -3782,17 +3818,20 @@ button.cw-pill[aria-expanded="true"]{
             }
           } catch (error) {
             if (aborted) return;
-            const timer = setInterval(async () => {
-              try {
-                const result = await api('/sessions/' + encodeURIComponent(currentId));
-                setDetail({ session: result.session, items: result.items || [] });
-              } catch { /* ignore */ }
-            }, 1500);
-            controller.signal.addEventListener('abort', () => clearInterval(timer));
+            setStreamState('retrying');
+            // 断线立刻补一次全量，别让界面停在旧状态；随后指数退避重连。
+            try {
+              const result = await api('/sessions/' + encodeURIComponent(currentId));
+              if (!aborted) setDetail({ session: result.session, items: result.items || [] });
+            } catch { /* Host 也不可达时保持现状 */ }
+            attempt = Math.min(attempt + 1, 5);
+            const delay = Math.min(8000, 400 * (2 ** attempt));
+            await new Promise((resolve) => { retryTimer = setTimeout(resolve, delay); });
+          }
           }
         };
         connect();
-        return () => { aborted = true; controller.abort(); };
+        return () => { aborted = true; if (retryTimer) clearTimeout(retryTimer); controller.abort(); };
       }, [currentId, loadTree, refreshSessions]);
 
       const currentSessionRef = useRef(null);
@@ -3955,10 +3994,12 @@ button.cw-pill[aria-expanded="true"]{
         setNewInitial({ provider, cwd: next ? next.cwd : (boot ? boot.defaultCwd : '') });
       };
 
-      const startNew = (provider, cwd) => {
+      const startNew = (provider, cwd, prompt) => {
         // 新建会话永远跟随顶部选中的助手；目录沿用当前会话 / 默认目录。
         setNewInitial({ provider: provider || topProvider, cwd: cwd || (scopedCurrent ? scopedCurrent.cwd : (scopedActive[0] ? scopedActive[0].cwd : (boot ? boot.defaultCwd : ''))) });
-        setPendingPrompt('');
+        // 空态任务卡会先 setPendingPrompt(text) 再调这里；无条件清空会把刚写入的
+        // 首条消息抹掉，导致「选一个任务开始」永远不发消息。带 prompt 时保留它。
+        setPendingPrompt(prompt || '');
         setShowNew(true);
       };
 
@@ -4669,7 +4710,7 @@ button.cw-pill[aria-expanded="true"]{
       const dockTodos = viewSession ? todosOf(items) : null;
 
       const renderItems = () => {
-        if (!viewSession) return h(EmptyState, { provider: currentProvider, onPick: (text) => { setPendingPrompt(text); startNew(currentProvider); } });
+        if (!viewSession) return h(EmptyState, { provider: currentProvider, onPick: (text) => startNew(currentProvider, undefined, text) });
         if (!items.length) return h(EmptyState, { provider: viewSession.provider, onPick: (text) => send(text) });
         const nodes = [];
         let index = 0;
@@ -4890,6 +4931,11 @@ button.cw-pill[aria-expanded="true"]{
                 onClick: () => { const element = scrollRef.current; if (element) element.scrollTop = element.scrollHeight; },
               }, '跳到审批卡'),
             ) : null,
+            streamState === 'retrying'
+              ? h('div', { className: 'cw-offline', role: 'status' },
+                h('span', { className: 'cw-pulse', 'aria-hidden': 'true' }),
+                '连接中断，正在重连…')
+              : null,
             /* 外层只负责定位（不滚动），滚动在里面的 .cw-scroll 里。
    原因：「回到最新」和轮次条如果用 absolute 挂在滚动容器内部，它们会跟着内容一起
    滚走（用户看到的「按钮被页面带着从右下角跑到中间」就是这么来的）。 */
@@ -4932,6 +4978,10 @@ button.cw-pill[aria-expanded="true"]{
                     element.style.height = Math.min(336, element.scrollHeight) + 'px';
                   },
                   onKeyDown: (event) => {
+                    // 中文输入法按 Enter 是「确认候选词」，此时 keydown 仍会到这里。
+                    // 不判 isComposing 就会把半句话发出去，草稿也随之清空。
+                    if (event.nativeEvent && event.nativeEvent.isComposing) return;
+                    if (event.keyCode === 229) return;
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
                       send();
