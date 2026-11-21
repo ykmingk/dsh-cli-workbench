@@ -1604,6 +1604,12 @@ button.cw-pill[aria-expanded="true"]{
   border-radius: var(--cw-radius-md); font-size: var(--cw-fs-xs); color: var(--cw-subtle); line-height: 1.7;
 }
 .cw-empty-note{ text-align: center; padding: 24px 0; font-size: var(--cw-fs-sm); color: var(--cw-subtle); }
+/* 路径要能选中复制（排查「数据目录不对」时第一件事就是把它贴出来） */
+.cw-set-path{
+  margin-top: 8px; padding: 8px 10px; font-family: var(--cw-mono, ui-monospace, Consolas, monospace);
+  font-size: var(--cw-fs-micro); line-height: 1.6; color: var(--cw-text-2, var(--cw-text));
+  word-break: break-all; user-select: text; border-style: solid;
+}
 .cw-arch-actions{ display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .cw-arch-actions-note{ flex: 1; font-size: var(--cw-fs-xs); }
 .cw-arch-actions button{ height: 28px; padding: 0 12px; border: 0; border-radius: var(--cw-radius-sm); font-size: var(--cw-fs-xs); box-shadow: inset 0 0 0 .5px var(--cw-border-2); }
@@ -2984,6 +2990,27 @@ button.cw-pill[aria-expanded="true"]{
                 })
                 : h('div', { className: 'cw-empty-note' }, updates && updates.error ? ('无法检测更新：' + updates.error) : '正在检测最新版本…'),
               h('div', { className: 'cw-set-note' }, '升级会执行 npm install -g 拉取对应 CLI 的最新稳定版，成功后重启 CLI 进程生效。'),
+            ),
+            h('div', { className: 'cw-upd-sec' },
+              h('div', { className: 'cw-set-title' },
+                h(Icon, { name: 'folder', size: 14 }),
+                '数据存放位置',
+                boot && boot.dataDirSource
+                  ? h('span', { className: 'cw-set-title-note' },
+                    boot.dataDirSource === 'profile' ? 'profile 目录' : '~/.dsh 回退目录')
+                  : null,
+              ),
+              h('div', { className: 'cw-set-note' },
+                '这里只存会话列表、工作区分组、归档与置顶、界面用的消息副本。对话本体始终在 CLI 自己的记录里'
+                + '（Claude：~/.claude/projects，Codex：~/.codex/sessions），所以这个目录丢了对话也不会丢，'
+                + '在终端里 claude --resume 照样能接上。'),
+              boot && boot.dataDir
+                ? h('div', { className: 'cw-set-note cw-set-path' }, boot.dataDir)
+                : null,
+              boot && boot.storage && boot.storage.saveError
+                ? h('div', { className: 'cw-set-note', style: { color: 'var(--cw-danger, #d9534f)' } },
+                  '最近一次写盘失败：' + boot.storage.saveError + '（改动可能没有保存到磁盘）')
+                : null,
             ),
           ),
           h('div', { className: 'cw-set-foot' },

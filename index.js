@@ -420,9 +420,49 @@ function collectSkillFiles(root, depth) {
   return found;
 }
 
+/**
+ * 选出本插件的数据目录，并记录它的来源。
+ *
+ * 宿主进程可能带 DSH_PROFILE_DIR（profile 启动），也可能没有（回退到 ~/.dsh）。
+ * 两种启动方式指向不同目录，如果简单地「有 profile 就用 profile」，用户一旦换了
+ * 启动方式就会看到「会话全没了」——其实是读了另一个空目录。
+ *
+ * 所以按「谁的 sessions.json 更新就用谁」选主；两个候选都为空时才按 profile 优先
+ * 创建。选中的目录之后会持续被写入，savedAt 自然最大，因此结果是自稳定的：一旦
+ * 选定就不会在两个目录之间来回跳。
+ *
+ * 选错的代价只是「看不见」，不会损坏对话——这里存的是索引与界面状态，对话本体
+ * 始终在 CLI 自己手里（~/.claude/projects、~/.codex/sessions）。
+ *
+ * @returns {{dir: string, source: 'profile' | 'home-fallback'}}
+ */
 function dataDirectory() {
-  const base = process.env.DSH_PROFILE_DIR || path.join(os.homedir(), '.dsh');
-  return path.join(base, 'cli-workbench');
+  const candidates = [];
+  if (process.env.DSH_PROFILE_DIR) {
+    candidates.push({ dir: path.join(process.env.DSH_PROFILE_DIR, 'cli-workbench'), source: 'profile' });
+  }
+  candidates.push({ dir: path.join(os.homedir(), '.dsh', 'cli-workbench'), source: 'home-fallback' });
+
+  const freshness = (dir) => {
+    const file = path.join(dir, 'sessions.json');
+    let parsed;
+    try { parsed = JSON.parse(readFileSync(file, 'utf8')); }
+    catch { return { at: 0, has: false }; } // 不存在或已损坏：两个候选里它不该胜出
+    const savedAt = Number(parsed && parsed.savedAt) || 0;
+    if (savedAt) return { at: savedAt, has: true };
+    // 老文件可能还没有 savedAt 字段，退回文件时间。
+    try { return { at: statSync(file).mtimeMs || 0, has: true }; }
+    catch { return { at: 0, has: true }; }
+  };
+
+  let best = null;
+  for (const candidate of candidates) {
+    const seen = freshness(candidate.dir);
+    if (!seen.has) continue;
+    if (!best || seen.at > best.at) best = { dir: candidate.dir, source: candidate.source, at: seen.at };
+  }
+  if (best) return { dir: best.dir, source: best.source };
+  return candidates[0];
 }
 
 function imageSize(buffer) {
@@ -452,7 +492,11 @@ function imageSize(buffer) {
 class Workbench {
   constructor(ctx) {
     this.ctx = ctx;
-    this.dir = dataDirectory();
+    const picked = dataDirectory();
+    this.dir = picked.dir;
+    // 数据目录的来源（profile / home-fallback）：换启动方式导致「会话不见了」时，
+    // 这是唯一能一眼看出来的线索，所以随 /status 暴露给设置面板。
+    this.dataDirSource = picked.source;
     this.file = path.join(this.dir, 'sessions.json');
     this.settingsFile = path.join(this.dir, 'settings.json');
     this.mcpDir = path.join(this.dir, 'mcp');
@@ -1351,6 +1395,9 @@ class Workbench {
       defaultCwd: (working && working.defaultDirectory) || process.cwd(),
       workspaces: this.workspaceList(),
       dataDir: this.dir,
+      // 'profile' = 用了 <DSH_PROFILE_DIR>/cli-workbench；'home-fallback' = 用了 ~/.dsh/cli-workbench。
+      // 两种启动方式不同时会指向不同目录，这个字段让「会话看起来没了」有据可查。
+      dataDirSource: this.dataDirSource,
       // 最近一次 sessions.json 写盘失败的原因（成功时为 null）。写盘失败不会打断
       // 回合，但必须能查到——否则「改了没保住」只会表现为重启后数据回退。
       storage: { saveError: this.saveError || null },
