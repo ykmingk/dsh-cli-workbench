@@ -343,17 +343,25 @@ function json(res, status, value) {
 /**
  * 用系统默认程序打开一个路径或 URL（文件/文件夹/链接都同一套）。
  *
- * 安全注意：cmd.exe 在解析 /c 的命令串时把换行当作命令分隔符，**双引号拦不住**，
- * 所以 `a"\ncalc` 这类值会被拼成第二条命令。target 直接来自 HTTP 请求体
- * （/open、/skills/open、/rules/open），因此这里遇到控制字符或引号一律拒绝，
- * 而不是「过滤掉再继续」——被过滤后还能打开的路径本身就不是合法路径。
+ * 安全注意：**不要**拼进 `cmd /c start`——cmd 在解析命令串时既把换行当分隔符，
+ * 又会按控制台代码页解读参数，中文路径会静默打不开。这里直接把参数交给
+ * explorer.exe / rundll32：Node 通过 CreateProcessW 传 UTF-16，绕开 cmd 的解析。
+ * 控制字符与引号仍然一律拒绝（target 来自 HTTP 请求体）。
  */
 function openTarget(target) {
   const value = text(target).trim();
   if (!value) return false;
   if (/[\u0000-\u001f\u007f"]/.test(value)) return false;
-  spawn('cmd.exe', ['/d', '/s', '/c', 'start "" "' + value + '"'], { detached: true, windowsHide: true }).unref();
-  return true;
+  try {
+    if (/^(https?|mailto):/i.test(value)) {
+      spawn('rundll32.exe', ['url.dll,FileProtocolHandler', value], { detached: true, windowsHide: true }).unref();
+    } else {
+      spawn('explorer.exe', [value], { detached: true, windowsHide: true }).unref();
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* --------------------------------------------------------------- skills */

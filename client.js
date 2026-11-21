@@ -3292,7 +3292,7 @@ button.cw-pill[aria-expanded="true"]{
      * 会话，也只列「装着该助手会话」的工作区。同一个目录可以被两个助手登记，所以
      * 每行的 `+` 和 🗑 都带上行所在的工作区目录，由外层按目录删。
      */
-    function Rail({ sessions, workspaces, currentId, provider, query, setQuery, fold, toggleFold, expandGroup, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
+    function Rail({ sessions, workspaces, registryReady, currentId, provider, query, setQuery, fold, toggleFold, expandGroup, batch, selected, toggleSelect, selectAll, onNew, onNewIn, onOpen, onMenu, onGroupMenu, onToggleSelect, onArchiveSelected, onDeleteSelected, onExitBatch }) {
       const meta = providerMeta(provider);
       const scoped = sessions.filter((session) => (session.provider || 'claude') === provider);
       const otherCount = sessions.filter((session) => !session.archived && (session.provider || 'claude') !== provider).length;
@@ -3329,7 +3329,10 @@ button.cw-pill[aria-expanded="true"]{
         const key = String(session.cwd || '');
         const entry = registry.get(key.toLowerCase());
         if (entry) groupOf(String(entry.cwd), entry.cwd, entry.title || basename(entry.cwd), true).sessions.push(session);
-        else if (registry.size) loose.push(session);
+        // 工作区清单可信时，没登记的会话一律进「未分组」。原来的兜底是「registry 为空
+        // 就按会话目录自动分组」——用户把工作区删光后，每个目录都会重新长出一行假的
+        // 「工作区」：长得一模一样，但 workspace=false，所以右键没有任何反应。
+        else if (registryReady || registry.size) loose.push(session);
         else groupOf(key || '(无目录)', session.cwd || '(无目录)', basename(session.cwd) || session.cwd || '(无目录)', false).sessions.push(session);
       }
       let ungrouped = null;
@@ -3549,6 +3552,15 @@ button.cw-pill[aria-expanded="true"]{
       const [upgrading, setUpgrading] = useState('');
       // 工作区登记表（Host 持久化）；新状态放在这里，保持前面状态的声明顺序稳定。
       const [workspaces, setWorkspaces] = useState([]);
+      /* 工作区清单是否可信（服务端成功返回过）。不可信时左栏才退回「按会话目录分组」，
+         这是给旧版 Host 的兜底；可信时没登记的会话一律进「未分组」。 */
+      const [registryReady, setRegistryReady] = useState(false);
+      // 统一入口：拿到服务端的工作区列表就整份替换，并标记清单可信。
+      const applyWorkspaces = (list) => {
+        if (!Array.isArray(list)) return;
+        setWorkspaces(list);
+        setRegistryReady(true);
+      };
       const [wsDelete, setWsDelete] = useState(null);
       const [wsDeleting, setWsDeleting] = useState(false);
       const [wsDeleteError, setWsDeleteError] = useState('');
@@ -3699,17 +3711,18 @@ button.cw-pill[aria-expanded="true"]{
         }
         (async () => {
           try {
-            const [list, modelInfo, defaults, spaces] = await Promise.all([
+            const [list, modelInfo, defaults, spacesRaw] = await Promise.all([
               api('/sessions'), api('/models'), api('/settings'),
-              // A host half from an older build has no workspace registry; the rail
-              // then falls back to grouping by each session's own directory.
-              api('/workspaces').catch(() => ({ workspaces: [] })),
+              // 旧版 Host 没有工作区注册表：那种情况下才退回「按会话目录分组」。
+              api('/workspaces').then((value) => ({ ok: true, workspaces: value.workspaces || [] })).catch(() => ({ ok: false, workspaces: [] })),
             ]);
+            const spaces = spacesRaw;
             if (!alive) return;
             setModels(modelInfo);
             setDefaults(defaults);
             setCustomModels((defaults && defaults.customModels) || { claude: [], codex: [] });
-            setWorkspaces(spaces.workspaces || (warm && warm.workspaces) || []);
+            if (spaces.ok) applyWorkspaces(spaces.workspaces);
+            else setWorkspaces((warm && warm.workspaces) || []);
             setSessions(list.sessions || []);
             // 打开工作台时默认落在最近动过的那个助手上，左边选题材、右边看内容都对得上。
             const active = (list.sessions || []).filter((session) => !session.archived)
@@ -4032,7 +4045,7 @@ button.cw-pill[aria-expanded="true"]{
         try {
           const result = await api('/sessions', { method: 'POST', body: JSON.stringify({ provider, cwd }) });
           setSessions((list) => [result.session, ...list]);
-          if (result.workspaces) setWorkspaces(result.workspaces);
+          if (result.workspaces) applyWorkspaces(result.workspaces);
           setTopProvider(result.session.provider || provider);
           setCurrentId(result.session.id);
           setDetail({ session: result.session, items: [] });
@@ -4065,7 +4078,7 @@ button.cw-pill[aria-expanded="true"]{
         try {
           const result = await api('/sessions', { method: 'POST', body: JSON.stringify({ provider, cwd }) });
           setSessions((list) => [result.session, ...list]);
-          if (result.workspaces) setWorkspaces(result.workspaces);
+          if (result.workspaces) applyWorkspaces(result.workspaces);
           setTopProvider(provider);
           setCurrentId(result.session.id);
           setDetail({ session: result.session, items: [] });
@@ -4146,7 +4159,7 @@ button.cw-pill[aria-expanded="true"]{
             method: 'PATCH',
             body: JSON.stringify({ cwd: wsRename.group.cwd, title }),
           });
-          if (result.workspaces) setWorkspaces(result.workspaces);
+          if (result.workspaces) applyWorkspaces(result.workspaces);
           setWsRename(null);
           showToast('已重命名为「' + title + '」');
         } catch (error) {
@@ -4168,7 +4181,15 @@ button.cw-pill[aria-expanded="true"]{
         setWsDeleteError('');
         try {
           const result = await api('/workspaces?cwd=' + encodeURIComponent(wsDelete.cwd), { method: 'DELETE' });
-          if (result.workspaces) setWorkspaces(result.workspaces);
+          if (result.workspaces) applyWorkspaces(result.workspaces);
+          // 不轻信单个响应：再拉一次两个列表，保证左栏与服务端一致
+          // （删完工作区后，原来的会话要立刻显示在「未分组」下）。
+          const [spaces, list] = await Promise.all([
+            api('/workspaces').catch(() => null),
+            api('/sessions').catch(() => null),
+          ]);
+          if (spaces && spaces.workspaces) applyWorkspaces(spaces.workspaces);
+          if (list && list.sessions) setSessions(list.sessions);
           showToast('已从工作台移除「' + wsDelete.title + '」');
           setWsDelete(null);
         } catch (error) {
@@ -4227,14 +4248,18 @@ button.cw-pill[aria-expanded="true"]{
         try { await api('/sessions/' + currentId + '/stop', { method: 'POST' }); refreshSessions(); } catch (error) { showToast(error.message); }
       };
 
-      const patchSession = async (id, body) => {
+      const patchSession = async (id, body, options) => {
         try {
           const result = await api('/sessions/' + id, { method: 'PATCH', body: JSON.stringify(body) });
           setSessions((list) => mergeSession(list, result.session));
-          setDetail((current) => {
-            if (!current || !current.session || current.session.id !== id) return current;
-            return { ...current, session: result.session };
-          });
+          // 置顶/归档这类只在左栏体现的改动，不要去替换 detail.session：
+          // 那会让整个对话重新渲染一遍（长会话里就是一次明显卡顿）。
+          if (!(options && options.railOnly)) {
+            setDetail((current) => {
+              if (!current || !current.session || current.session.id !== id) return current;
+              return { ...current, session: result.session };
+            });
+          }
           return result.session;
         } catch (error) {
           showToast(error.message);
@@ -4269,7 +4294,7 @@ button.cw-pill[aria-expanded="true"]{
       const askDeleteSessions = (list) => {
         const ids = list.map((item) => item.id);
         if (!ids.length) return;
-        setConfirm({
+        setConfirmBox({
           kind: 'delete',
           ids,
           title: ids.length > 1 ? '删除 ' + ids.length + ' 个会话' : '删除会话',
@@ -4319,12 +4344,15 @@ button.cw-pill[aria-expanded="true"]{
         const session = ctxMenu ? ctxMenu.session : null;
         setCtxMenu(null);
         if (!session) return;
-        if (action === 'pin') await patchSession(session.id, { pinned: !session.pinned });
+        if (action === 'pin') await patchSession(session.id, { pinned: !session.pinned }, { railOnly: true });
         else if (action === 'rename') {
           // 重命名也用插件自己的输入框（原生 prompt 同样和界面对不上）
           setRenameBox({ session, value: session.title, busy: false, error: '' });
         } else if (action === 'openfolder') {
-          await api('/open', { method: 'POST', body: JSON.stringify({ target: session.cwd }) });
+          // 这里原来没有 try/catch：请求失败会变成未处理的 rejection，右键菜单
+          // 看起来「点了没反应」。失败必须说出来。
+          try { await api('/open', { method: 'POST', body: JSON.stringify({ target: session.cwd }) }); }
+          catch (error) { showToast('打开文件夹失败：' + error.message); }
         } else if (action === 'copyid') {
           /* 复制哪一段是明说的事：工作台自己的会话 id 永远在最前，其后是 CLI 的原生
              id（Claude 的 session_id / Codex 的 thread_id）——排查问题时两者都要。 */
@@ -4917,7 +4945,7 @@ button.cw-pill[aria-expanded="true"]{
         ) : null,
         h('div', { className: 'cw-main' },
           h(Rail, {
-            sessions, workspaces, currentId, provider: currentProvider, query, setQuery, fold,
+            sessions, workspaces, registryReady, currentId, provider: currentProvider, query, setQuery, fold,
             toggleFold: (key) => setFold((current) => ({ ...current, [key]: current[key] === 'collapsed' ? 'open' : current[key] === 'open' ? 'fold' : 'collapsed' })),
             // 「展开剩余 N 个会话」专用：无论当前处于默认档还是折叠档，都直接铺开全部
             expandGroup: (key) => setFold((current) => ({ ...current, [key]: 'open' })),
