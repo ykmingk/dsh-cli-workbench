@@ -1050,10 +1050,11 @@ window.__ModuleLoader__.load({
 /* 底部行至少 34px（发送键高度），且不被 flex 压缩——否则圆角卡会把它裁掉一截。 */
 .cw-input-foot{ flex: none; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 0 0 2px; }
 /* 发送 / 停止键靠 margin-left:auto 贴右（工具条是普通 flex 子项，不会自己撑满） */
-.cw-input-tools{ display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
-/* 工具按钮：28px 方形图标按钮（文件 / 斜杠命令仍走这一套，密度更像工具栏） */
+.cw-input-tools{ display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap; }
+/* 工具按钮：图标按钮给到 34px，两个相邻的图标之间留 4px——
+   原来 28px + 2px 间距，@ 和 / 挤在一起很难点中。 */
 .cw-tool{
-  width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   border-radius: var(--cw-radius-sm); color: var(--cw-subtle);
 }
 .cw-tool:hover{ background: var(--cw-hover); color: var(--cw-text); }
@@ -2450,9 +2451,11 @@ button.cw-pill[aria-expanded="true"]{
       const terminals = items.filter((item) => item.kind === 'tool' && item.category === 'terminal' && item.status === 'running');
       const now = activityOf(session, items);
       const allowed = (session && session.allowedTools) || [];
-      /* 项目指令文件按助手区分：Claude 只有 CLAUDE.md，Codex 只有 AGENTS.md */
+      /* 指令文件按助手区分：Claude 读 CLAUDE.md，Codex 读 AGENTS.md。
+         两级都有：用户级（家目录，对所有项目生效）和项目级（当前目录）。 */
       const ruleLabel = (session && session.provider === 'codex') ? 'AGENTS.md' : 'CLAUDE.md';
-      const hasRule = Boolean(tree && tree.memory && ((session && session.provider === 'codex') ? tree.memory.agents : tree.memory.claude));
+      const ruleRows = (tree && Array.isArray(tree.rules) ? tree.rules : [])
+        .filter((entry) => !session || entry.provider === (session.provider || 'claude'));
       /* CLI 的提醒类输出（比如 Codex 的实验性开关警告）曾经被当成一轮失败推进对话，
          现在收到这里：右栏一条安静的小卡，不占正文、不改变会话状态。 */
       const advisories = (session && Array.isArray(session.advisories)) ? session.advisories.slice(-3) : [];
@@ -2503,14 +2506,22 @@ button.cw-pill[aria-expanded="true"]{
           ),
         ),
         h('div', { className: 'cw-sec' },
-          h('div', { className: 'cw-sec-title' }, h(Icon, { name: 'file', size: 13 }), '项目指令文件'),
+          h('div', { className: 'cw-sec-title' }, h(Icon, { name: 'file', size: 13 }), '指令文件'),
           h('div', { className: 'cw-card' },
-            /* CLAUDE.md 只有 Claude 读、AGENTS.md 只有 Codex 读：这里只显示当前会话那个 CLI 的文件 */
-            h('div', { className: 'cw-mem ' + (hasRule ? 'ok' : 'no') },
-              h(Icon, { name: hasRule ? 'check' : 'file', size: 13 }),
-              ruleLabel + ' ' + (hasRule ? '已加载' : '未找到')),
-            h('div', { className: 'cw-mem-note' }, ruleLabel + ' 是 ' + providerMeta(session ? session.provider : 'claude').label
-              + ' 自己的「系统提示词」：写一次，之后每次对话都生效。'),
+            /* 两级都列出来：只显示项目级的时候，家目录里明明有 CLAUDE.md，
+               这一栏还是写「未找到」，很容易看成「CLI 没读到任何指令」。 */
+            ruleRows.length
+              ? ruleRows.map((entry) => h('div', {
+                key: entry.id,
+                className: 'cw-mem ' + (entry.exists ? 'ok' : 'no'),
+                title: entry.file,
+              },
+                h(Icon, { name: entry.exists ? 'check' : 'file', size: 13 }),
+                (entry.scope === 'user' ? '用户级 ' : '项目级 ') + entry.label
+                  + (entry.exists ? ' 已加载' : ' 未找到')))
+              : h('div', { className: 'cw-mem no' },
+                h(Icon, { name: 'file', size: 13 }), ruleLabel + ' 未找到'),
+            h('div', { className: 'cw-mem-note' }, '用户级对所有项目生效，项目级只对当前目录生效。'),
             h('div', { style: { display: 'flex', gap: '6px', marginTop: '8px' } },
               h('button', { className: 'cw-btn sm', onClick: onEditRules },
                 h(Icon, { name: 'edit', size: 12 }), '编辑自定义规则'),
@@ -3570,8 +3581,6 @@ button.cw-pill[aria-expanded="true"]{
       const [renameBox, setRenameBox] = useState(null);
       const [groupMenu, setGroupMenu] = useState(null);
       const [wsRename, setWsRename] = useState(null);
-      const [modelBox, setModelBox] = useState(null);
-      const [customModels, setCustomModels] = useState({ claude: [], codex: [] });
       const inspPref = useRef(undefined);
       if (inspPref.current === undefined) {
         let stored = '';
@@ -3607,7 +3616,18 @@ button.cw-pill[aria-expanded="true"]{
       const [ctxMenu, setCtxMenu] = useState(null);
       const [toast, setToast] = useState(null);
       const [noticeClosed, setNoticeClosed] = useState(false);
-      const [draft, setDraft] = useState('');
+      /* 草稿按会话分开存：原来是一个全局字符串，切换到别的会话（或新建会话）
+         会把上一个会话没发出去的内容带过去。 */
+      const [drafts, setDrafts] = useState({});
+      const draftKey = currentId || '__new__';
+      const draft = drafts[draftKey] || '';
+      // 保留 setDraft(value | fn) 的原用法，只是落到当前会话自己的槽位。
+      const setDraft = (updater) => setDrafts((current) => {
+        const previous = current[draftKey] || '';
+        const next = typeof updater === 'function' ? updater(previous) : updater;
+        if (next === previous) return current;
+        return { ...current, [draftKey]: next };
+      });
       const [fileRef, setFileRef] = useState('');
       /* 已引用的技能：输入框里只留 `/名字` 短令牌，卡片显示名字，正文由 Host 补 */
       const [skillRefs, setSkillRefs] = useState([]);
@@ -3619,6 +3639,15 @@ button.cw-pill[aria-expanded="true"]{
       const rootRef = useRef(null);
       const scrollRef = useRef(null);
       const textareaRef = useRef(null);
+
+      /* 草稿跟着会话走，输入框高度也得跟着重算：
+         否则切到短草稿会留着上一个会话的行数（空草稿还会撑着一大块）。 */
+      useEffect(() => {
+        const element = textareaRef.current;
+        if (!element) return;
+        element.style.height = 'auto';
+        element.style.height = Math.min(336, element.scrollHeight) + 'px';
+      }, [draft, currentId]);
 
       const showToast = useCallback((text, action) => {
         setToast({ text, action, at: Date.now() });
@@ -3721,7 +3750,6 @@ button.cw-pill[aria-expanded="true"]{
             if (!alive) return;
             setModels(modelInfo);
             setDefaults(defaults);
-            setCustomModels((defaults && defaults.customModels) || { claude: [], codex: [] });
             if (spaces.ok) applyWorkspaces(spaces.workspaces);
             else setWorkspaces((warm && warm.workspaces) || []);
             setSessions(list.sessions || []);
@@ -4100,43 +4128,6 @@ button.cw-pill[aria-expanded="true"]{
        * 工作区行的菜单：右键或行尾「⋯」都能打开。工作区的增删改集中在这里，
        * 行上只留一个「+」和一个「⋯」，不再长期占两个图标。
        */
-      /**
-       * 自定义模型：只存进插件自己的 settings.json（customModels），不写 CLI 的
-       * 全局配置。加进列表后，这个助手的新会话就能直接选它。
-       */
-      const customList = (provider) => (customModels && Array.isArray(customModels[provider]) ? customModels[provider] : []);
-
-      const addCustomModel = async () => {
-        if (!modelBox) return;
-        const provider = currentProvider;
-        const name = String(modelBox.value || '').trim();
-        if (!name) { setModelBox({ ...modelBox, error: '先填一个模型名' }); return; }
-        if (name.length > 80) { setModelBox({ ...modelBox, error: '模型名最长 80 个字符' }); return; }
-        if (!/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(name)) {
-          setModelBox({ ...modelBox, error: '只能用字母、数字和 . _ : / @ -，且以字母或数字开头' });
-          return;
-        }
-        const list = customList(provider);
-        if (list.some((item) => item.toLowerCase() === name.toLowerCase())) {
-          setModelBox({ ...modelBox, error: '列表里已经有这个模型了' });
-          return;
-        }
-        if (list.length >= 20) { setModelBox({ ...modelBox, error: '每种 CLI 最多 20 个自定义模型' }); return; }
-        setModelBox({ ...modelBox, busy: true, error: '' });
-        try {
-          const next = { ...customModels, [provider]: [...list, name] };
-          const saved = await api('/settings', { method: 'POST', body: JSON.stringify({ customModels: next }) });
-          setCustomModels(saved.customModels || next);
-          setDefaults(saved);
-          setModelBox(null);
-          // 加完直接给当前会话用上（还没有会话时只进列表）
-          if (viewSession) await setModel(name);
-          else showToast('已加入 ' + providerMeta(provider).label + ' 的模型列表');
-        } catch (error) {
-          setModelBox({ ...modelBox, busy: false, error: error.message });
-        }
-      };
-
       const askGroupMenu = (group, x, y) => setGroupMenu({ group, x, y });
 
       const groupAction = async (action) => {
@@ -4714,10 +4705,8 @@ button.cw-pill[aria-expanded="true"]{
 
       /**
        * 模型菜单：挂在输入卡左下的模型按钮上（左对齐按钮中心），弹层贴着输入卡
-       * 上沿 6px，和统计浮层同一套材质与间距。列表来自本机 CLI 配置 + 用户在这个
-       * 插件里自己加过的模型（存在 settings.json 的 customModels）。
+       * 上沿 6px，和统计浮层同一套材质与间距。
        */
-      const customModelList = customList(currentProvider);
       /**
        * 技能 / 文件 / 斜杠命令的选择浮层。
        * 宽度跟着输入卡走（DSH 的 trigger menu 就是 left:0 / right:0 贴在输入卡上），
@@ -4747,7 +4736,9 @@ button.cw-pill[aria-expanded="true"]{
           h(Icon, { name: picker.kind === 'file' ? 'file' : picker.kind === 'skill' ? 'skill' : 'slash' }),
           /* 文件名单独一列、按整卡宽度的 40% 给足空间（旧版 340px 小窗里只留 42%，
              文件名必被截断）。目录放在右边一列，从尾部开始省略。 */
-          h('span', { className: 'cw-picker-name' }, item.label),
+          /* 斜杠命令前面的图标本身就是一条「/」，标签再带一个就变成「//clear」。
+             这里把标签的前导斜杠去掉，斜杠只由图标表达。 */
+          h('span', { className: 'cw-picker-name' }, picker.kind === 'slash' ? String(item.label).replace(/^\//, '') : item.label),
           item.desc ? h('span', { className: 'tail' + (item.descIsPath ? ' is-path' : '') }, item.desc) : null,
         )),
         picker.kind === 'skill' && picker.otherCount
@@ -4772,34 +4763,17 @@ button.cw-pill[aria-expanded="true"]{
               ? '当前'
               : (models[currentProvider].landed ? '已解析成具体模型' : '本机配置')))
           : null,
-        /* 别名解释（sonnet 是什么、来源、最近一次解析）整段去掉：这是纯噪音，
-           菜单里只留「能选什么、当前是哪个」。 */
-        customModelList.map((name) => h('button', {
-          key: 'custom-' + name,
+        /* 两个 CLI 都没有「列出可用模型」的稳定接口（`--help` 里只给别名提示），
+           所以这里不假装有全集：只列默认、本机配置，以及 Claude 官方文档里写明的别名。
+           Codex 的模型 id 无法枚举，因此它只到「默认 / 本机配置」为止。 */
+        (currentProvider === 'claude' ? ['sonnet', 'opus', 'fable'] : []).map((name) => h('button', {
+          key: 'alias-' + name,
           className: 'cw-pop-item' + (viewSession && viewSession.model === name ? ' is-current' : ''),
           onClick: () => setModel(name),
         },
         h(Icon, { name: 'brain' }), name,
-        h('span', { className: 'tail' }, viewSession && viewSession.model === name ? '当前' : '自定义'),
+        h('span', { className: 'tail' }, viewSession && viewSession.model === name ? '当前' : '别名'),
         )),
-        customModelList.length === 0
-          ? h('div', { className: 'cw-pop-note' }, '还没有自定义模型。点下面「自定义模型…」加一个。')
-          : null,
-        h('div', { className: 'cw-pop-sep' }),
-        h('button', { className: 'cw-pop-item', onClick: () => { setMenu(null); setModelBox({ value: '', error: '' }); } },
-          h(Icon, { name: 'plus' }), '自定义模型…',
-          h('span', { className: 'tail' }, providerMeta(currentProvider).label)),
-        customModelList.length
-          ? h('button', { className: 'cw-pop-item', onClick: async () => {
-            setMenu(null);
-            try {
-              const saved = await api('/settings', { method: 'POST', body: JSON.stringify({ customModels: { ...customModels, [currentProvider]: [] } }) });
-              setCustomModels(saved.customModels || { claude: [], codex: [] });
-              setDefaults(saved);
-              showToast('已清空 ' + providerMeta(currentProvider).label + ' 的自定义模型');
-            } catch (error) { showToast(error.message); }
-          } }, h(Icon, { name: 'trash' }), '清空自定义列表')
-          : null,
       );
       const otherPending = sessions.find((session) => !session.archived && session.id !== currentId && session.pending);
       const hasPendingForOther = Boolean(otherPending) && !noticeClosed;
@@ -5336,18 +5310,6 @@ button.cw-pill[aria-expanded="true"]{
           onChange: (value) => setWsRename({ ...wsRename, value, error: '' }),
           onCancel: () => { if (!wsRename.busy) setWsRename(null); },
           onConfirm: submitWsRename,
-        }) : null,
-        modelBox ? h(RenameDialog, {
-          title: '自定义 ' + providerMeta(currentProvider).label + ' 模型',
-          label: '模型名（会作为 --model 传给 CLI）',
-          value: modelBox.value,
-          busy: Boolean(modelBox.busy),
-          error: modelBox.error,
-          placeholder: currentProvider === 'codex' ? '例如 gpt-5-codex' : '例如 claude-sonnet-4-5',
-          hint: '只对工作台生效，最多 20 个。',
-          onChange: (value) => setModelBox({ ...modelBox, value, error: '' }),
-          onCancel: () => { if (!modelBox.busy) setModelBox(null); },
-          onConfirm: addCustomModel,
         }) : null,
         toast ? h('div', { className: 'cw-toast' },
           h('span', null, toast.text),
