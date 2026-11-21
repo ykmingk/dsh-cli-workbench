@@ -1134,8 +1134,15 @@ window.__ModuleLoader__.load({
 .cw-chip.sm{ height: 24px; padding: 0 8px; font-size: var(--cw-fs-xs); text-shadow: none; box-shadow: inset 0 0 0 .5px var(--cw-border-2); }
 /* 模型菜单要放下「别名 + 网关里的完整模型名」，比其他浮层宽；
    右侧的模型名不换行，超长用省略号（悬停有 title 看全名）。 */
-.cw-model-pop{ min-width: 320px; max-width: min(460px, calc(100vw - 24px)); }
-.cw-model-pop .cw-pop-item .tail{ max-width: 262px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-model-pop{ min-width: 400px; max-width: min(575px, calc(100vw - 24px)); }
+/* 右侧模型名原来用 11px：在带 backdrop-filter 的浮层里又小又淡，看着发虚。
+   抬到 12px、行高定死 16px（避免半像素居中）、颜色提一档到 --cw-muted，
+   并把 font-weight 写死 400，防止合成层里出现「伪加粗/伪细体」。 */
+.cw-model-pop .cw-pop-item .tail{
+  max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--cw-fs-xs); line-height: 16px; font-weight: 400; color: var(--cw-muted);
+  letter-spacing: 0; font-variant-numeric: tabular-nums;
+}
 .cw-pop-sep{ height: .5px; margin: 4px 8px; background: var(--cw-border-2); }
 .cw-pop-note{ padding: 2px 12px 6px; font-size: var(--cw-fs-micro); line-height: 1.6; color: var(--cw-subtle); }
 /* 锚点容器：浮层的参照物就是被点的那个按钮本身（不是整条 dock）。
