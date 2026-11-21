@@ -304,18 +304,29 @@ function killTree(child) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
+    let bytes = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+      // 交由 route 的 catch 回 413；这里只负责停止继续累积。
+      try { req.destroy(); } catch { /* already gone */ }
+    };
     req.on('data', (chunk) => {
+      if (settled) return;
+      // 按**字节**计：data.length 是 UTF-16 码元数，中文/emoji 实际放行到 8-12MB。
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) { fail(new Error('body too large')); return; }
       data += chunk.toString('utf8');
-      if (data.length > 4 * 1024 * 1024) {
-        reject(new Error('body too large'));
-        req.destroy();
-      }
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       if (!data) return resolve({});
       try { resolve(JSON.parse(data)); } catch (error) { reject(error); }
     });
-    req.on('error', reject);
+    req.on('error', (error) => { if (!settled) { settled = true; reject(error); } });
   });
 }
 
@@ -394,6 +405,9 @@ function parseSkillFrontmatter(raw) {
  */
 function collectSkillFiles(root, depth) {
   const found = [];
+  /* 有没有因为层数上限而没去看的目录：有的话调用方要如实告诉用户，
+     否则「技能少了一个」会被误当成没装。 */
+  let truncated = false;
   const isDir = (dir) => {
     try { return statSync(dir).isDirectory(); } catch { return false; }
   };
@@ -413,11 +427,16 @@ function collectSkillFiles(root, depth) {
         continue;
       }
       // 隐藏目录不收自身，但里面的技能照收（Codex 的 .system 内置技能）
+      if (level >= depth) {
+        // 已经到了允许的最深层，下一层可能还有技能；记下来，别让它静默消失
+        truncated = true;
+        continue;
+      }
       walk(child, level + 1);
     }
   };
   walk(root, 1);
-  return found;
+  return { files: found, truncated };
 }
 
 /**
@@ -622,6 +641,7 @@ class Workbench {
           pinned: Boolean(raw.pinned),
           archived: Boolean(raw.archived),
           archivedKind: text(raw.archivedKind),
+          archivedAt: Number(raw.archivedAt) || null,
           claudeSessionId: raw.claudeSessionId || null,
           codexThreadId: raw.codexThreadId || null,
           permissionMode: PERMISSION_MODES.has(raw.permissionMode) ? raw.permissionMode : 'manual',
@@ -633,6 +653,9 @@ class Workbench {
           itemBase: Number(raw.itemBase) || 0,
           usage: raw.usage && typeof raw.usage === 'object' ? raw.usage : null,
           files: Array.isArray(raw.files) ? raw.files : [],
+          // 运行提示（Codex 的告警等）原来只写不读，重启后整块消失；
+          // 它是有用的诊断信息（比如归档命令失败），必须跟着落盘回来。
+          advisories: Array.isArray(raw.advisories) ? raw.advisories.slice(-8) : [],
           error: raw.error && typeof raw.error === 'object' ? raw.error : null,
           pending: null,
           pendingQueue: [],
@@ -825,6 +848,7 @@ class Workbench {
       pinned: session.pinned,
       archived: session.archived,
       archivedKind: session.archivedKind,
+      archivedAt: Number(session.archivedAt) || null,
       claudeSessionId: session.claudeSessionId,
       codexThreadId: session.codexThreadId,
       permissionMode: session.permissionMode,
@@ -975,7 +999,10 @@ class Workbench {
     try {
       await this.route(req, res, url, route);
     } catch (error) {
-      try { json(res, 500, { error: String(error && error.message || error) }); } catch { /* headers sent */ }
+      const message = String(error && error.message || error);
+      // 请求体超限是一个明确的客户端错误，别混成 500
+      const status = message === 'body too large' ? 413 : 500;
+      try { json(res, status, { error: status === 413 ? '请求体超过 4MB' : message }); } catch { /* headers sent */ }
     }
   }
 
@@ -1017,14 +1044,6 @@ class Workbench {
       const cwd = text(url.searchParams.get('cwd') || '');
       return json(res, 200, this.skills(cwd));
     }
-    if (route === '/skills/open' && method === 'POST') {
-      // 打开技能所在目录，方便用户自己改 SKILL.md
-      const body = await readBody(req);
-      const dir = realCwd(text(body.dir || ''));
-      if (!dir || !existsSync(dir)) return json(res, 400, { error: '技能目录不存在' });
-      await openTarget(dir);
-      return json(res, 200, { ok: true });
-    }
     if (route === '/rules' && method === 'GET') {
       const cwd = text(url.searchParams.get('cwd') || '');
       const provider = text(url.searchParams.get('provider') || '');
@@ -1033,13 +1052,6 @@ class Workbench {
     if (route === '/rules' && method === 'POST') {
       const body = await readBody(req);
       return json(res, 200, await this.writeRules(body));
-    }
-    if (route === '/rules/open' && method === 'POST') {
-      const body = await readBody(req);
-      const found = this.rulesFiles(body && body.cwd, text(body && body.provider || '')).find((entry) => entry.id === text(body && body.id || ''));
-      if (!found) return json(res, 404, { error: '未知的指令文件' });
-      await openTarget(found.file);
-      return json(res, 200, { ok: true });
     }
     if (route === '/preview' && method === 'GET') {
       const file = text(url.searchParams.get('path') || '');
@@ -1161,15 +1173,9 @@ class Workbench {
           ? body.decision : null;
         if (!decision) return json(res, 400, { error: 'bad decision' });
         const ok = this.resolveApproval(session, text(body.requestId), decision, text(body.reason));
-        return json(res, ok ? 200 : 404, { ok, session: this.publicSession(session) });
-      }
-      if (action === '/events' && method === 'GET') {
-        const since = Number(url.searchParams.get('since') || 0);
-        return json(res, 200, {
-          session: this.publicSession(session),
-          items: Number.isFinite(since) ? session.items.slice(since) : session.items,
-          total: session.items.length,
-        });
+        return json(res, ok ? 200 : 404, ok
+        ? { ok, session: this.publicSession(session) }
+        : { ok, error: '审批已失效或已处理（可能已超时）', session: this.publicSession(session) });
       }
       if (action === '/stream' && method === 'GET') {
         this.attachStream(session, req, res);
@@ -1264,6 +1270,9 @@ class Workbench {
     }
     if (typeof body.archived === 'boolean' && body.archived !== session.archived) {
       session.archived = body.archived;
+      // 归档时间：界面按它排序和分层（「今天刚归档」不该掉进「更早」）。
+      // 原来 Host 从不写这个字段，客户端只能退回 updatedAt，排序就失真了。
+      session.archivedAt = body.archived ? now() : null;
       const native = session.provider === 'codex' && Boolean(session.codexThreadId);
       if (body.archived) {
         session.archivedKind = native ? '原生归档 · codex archive' : '软归档 · CLI resume 仍可见';
@@ -1665,17 +1674,18 @@ class Workbench {
     const dirs = [];
     for (const entry of roots) {
       const exists = existsSync(entry.root);
-      const info = { provider: entry.provider, scope: entry.scope, label: entry.label, path: entry.root, exists, count: 0, error: '' };
+      const info = { provider: entry.provider, scope: entry.scope, label: entry.label, path: entry.root, exists, count: 0, truncated: false, error: '' };
       dirs.push(info);
       if (!exists) continue;
-      let files;
+      let scanned;
       try {
-        files = collectSkillFiles(entry.root, 2);
+        scanned = collectSkillFiles(entry.root, 2);
       } catch (error) {
         info.error = String(error && error.message || error);
         continue;
       }
-      for (const found of files) {
+      info.truncated = Boolean(scanned.truncated);
+      for (const found of scanned.files) {
         const key = entry.provider + '|' + found.file.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1692,8 +1702,15 @@ class Workbench {
         // 目录链接：告诉用户这个技能是链接进来的，以及链到哪
         let link = '';
         try { if (lstatSync(found.dir).isSymbolicLink()) link = realpathSync(found.dir); } catch { /* not a link */ }
-        // Codex 自带技能放在 `.codex/skills/.system`，标出来别让用户以为是自己装的
-        const builtin = entry.root && found.dir.includes(path.sep + '.');
+        // Codex 自带技能放在 `.codex/skills/.system`，标出来别让用户以为是自己装的。
+        // 判定必须只看**技能根目录下的第一层**：原来用 includes(sep + '.') 判断，
+        // 而工作区技能本身就长在 `<cwd>\.claude\skills\...` 下，于是全被误标成内置。
+        let builtin = false;
+        if (entry.root) {
+          const rel = path.relative(entry.root, found.dir);
+          const top = rel && !rel.startsWith('..') ? rel.split(path.sep)[0] : '';
+          builtin = Boolean(top) && top.startsWith('.');
+        }
         info.count += 1;
         skills.push({
           provider: entry.provider,
@@ -1753,7 +1770,8 @@ class Workbench {
    */
   expandSkillTokens(content, cwd, provider) {
     const raw = String(content || '');
-    const tokens = [...raw.matchAll(/(^|\s)\/([A-Za-z0-9][\w-]*)(?=\s|$)/g)];
+    // 技能目录名可能含点（如 my.skill）：原来的 [\w-]* 认不出，令牌会原样发给 CLI。
+    const tokens = [...raw.matchAll(/(^|\s)\/([A-Za-z0-9][\w.-]*)(?=\s|$)/g)];
     if (!tokens.length) return raw;
     const mine = provider === 'codex' ? 'codex' : provider === 'claude' ? 'claude' : '';
     let catalog = null;
@@ -1895,7 +1913,15 @@ class Workbench {
         killTree(child);
         this.procs.delete(session.id);
       }
+      // 最后一个热进程回收掉之后，如果确实没有活要保（没有事件流、没有待审批），
+      // 立刻走一次空闲回收，不用再等满一个 30 分钟的周期。
+      if (!this.hasLiveWork()) {
+        if (this.unmountTimer !== null) { clearTimeout(this.unmountTimer); this.unmountTimer = null; }
+        this.scheduleIdleUnmount();
+      }
     }, 10 * 60 * 1000);
+    // 这个定时器不该拖住宿主退出（与 unmountTimer 一致）
+    if (session._reapTimer && typeof session._reapTimer.unref === 'function') session._reapTimer.unref();
   }
 
   clearReap(session) {
@@ -2006,8 +2032,7 @@ class Workbench {
         this.sessionEvent(session);
         this.scheduleSave();
       } else if (event.subtype === 'thinking_tokens') {
-        session.liveThinking = event.estimated_tokens || 0;
-        this.sessionEvent(session);
+        // 这个计数据历史遗留，两端都没有人读；留着一个每事件广播的活字段只会误导。
       } else if (event.subtype === 'error') {
         this.push(session, {
           id: idOf('err'), kind: 'error', phase: 'CLI', category: 'CLI 报告错误',
@@ -2040,7 +2065,6 @@ class Workbench {
           const openId = session._thinkIds && session._thinkIds.shift();
           if (openId) {
             this.patch(session, openId, { text: block.thinking, streaming: false, durationMs: duration });
-            session.liveThinking = null;
           } else {
             this.push(session, {
               id: idOf('think'), kind: 'thinking', text: block.thinking, durationMs: duration,
@@ -2137,7 +2161,6 @@ class Workbench {
     if (session._openThink) this.patch(session, session._openThink, { streaming: false });
     session._openText = null;
     session._openThink = null;
-    session.liveThinking = null;
   }
 
   handleStreamEvent(session, streamEvent) {
@@ -2608,7 +2631,7 @@ class Workbench {
       session.pending = session.pendingQueue.shift();
       session.status = 'waiting';
       this.sessionEvent(session);
-      this.emit(session, { type: 'approval', pending: session.pending });
+      this.emit(session, { type: 'approval', pending: session.pending, pendingCount: session.pendingQueue.length + (session.pending ? 1 : 0) });
     }
     const decision = await new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -2674,7 +2697,7 @@ class Workbench {
       session.pendingQueue = [];
       touched = true;
     }
-    if (touched) this.emit(session, { type: 'approval', pending: null });
+    if (touched) this.emit(session, { type: 'approval', pending: null, pendingCount: session.pendingQueue.length });
   }
 
   /* ----------------------------------------------------------------- files */

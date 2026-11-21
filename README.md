@@ -105,15 +105,26 @@
 
 ## 数据存在哪
 
-插件的数据都在 DSH profile 目录下，不会碰 CLI 的全局配置：
+插件的数据都在 DSH 的数据目录下，不会碰 CLI 的全局配置：
 
 ```
-<DSH profile 目录>/cli-workbench/
-├── sessions.json    会话、工作区、归档状态
+<数据目录>/cli-workbench/
+├── sessions.json    会话、工作区、归档状态、界面用的消息副本
+├── settings.json    新建会话的默认权限/沙箱档位、自定义模型名
 └── mcp/             Claude 审批桥运行时的临时配置
 ```
 
+`<数据目录>` 按启动方式不同，可能是 `<DSH profile 目录>`，也可能是 `~/.dsh`。
+工作台「设置 → 数据存放位置」会直接显示当前用的是哪一个。
+
+这里只存**索引与界面状态**：对话本体始终在 CLI 自己的记录里
+（Claude：`~/.claude/projects`，Codex：`~/.codex/sessions`），所以这个目录即使丢了，
+对话也不会丢，在终端里 `claude --resume` 照样能接上。
+
 它**不**写 `~/.claude/settings.json`、`~/.codex/config.toml`，也不配置 API Key、Base URL 或代理——那些仍然是你 CLI 自己的事。
+
+> 界面语言：当前只有中文。`locale/*.json` 覆盖的是插件市场里显示的标题与简介，
+> 界面文案不读它。
 
 ## 开发与本地调试
 

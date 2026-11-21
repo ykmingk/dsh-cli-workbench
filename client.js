@@ -687,6 +687,13 @@ window.__ModuleLoader__.load({
 /* 行内链接（助手输出里的 markdown 链接） */
 .inline-link{ color: var(--cw-running); text-decoration: none; border-bottom: .5px solid currentColor; }
 .inline-link:hover{ opacity: .8; }
+/* 错误边界的降级面板：整块面板渲染失败时顶上来，至少给出原因和一条出路 */
+.cw-fatal{
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  height: 100%; padding: 32px; text-align: center; color: var(--cw-text);
+}
+.cw-fatal-title{ font-size: var(--cw-fs-lg, var(--cw-fs-base)); font-weight: var(--cw-fw-medium); }
+.cw-fatal-note{ max-width: 520px; font-size: var(--cw-fs-xs); line-height: 1.7; color: var(--cw-subtle); word-break: break-word; }
 .cw-scroll{ flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px 10px; }
 
 /* —— 轮次条：会话右侧的短横刻度，悬停看那条消息，点一下跳过去 ——
@@ -2087,8 +2094,11 @@ button.cw-pill[aria-expanded="true"]{
 
     function ErrorCard({ item, onRetry }) {
       const [open, setOpen] = useState(false);
+      // 标题按阶段区分：CLI 起不来和跑到一半断连是两回事，原来一律写「连接中断」，
+      // 阶段明明写着「启动」，反而把排查方向带偏。
+      const title = item.phase === '启动' ? 'CLI 启动失败' : 'CLI 连接中断，本轮已停止';
       return h('div', { className: 'cw-err' },
-        h('div', { className: 'cw-err-head' }, h(Icon, { name: 'alert', size: 15 }), 'CLI 连接中断，本轮已停止'),
+        h('div', { className: 'cw-err-head' }, h(Icon, { name: 'alert', size: 15 }), title),
         h('div', { className: 'cw-err-body' },
           h('div', { className: 'cw-err-diag' },
             h('span', { className: 'k' }, '阶段'), h('span', null, item.phase || '未知'),
@@ -3340,6 +3350,11 @@ button.cw-pill[aria-expanded="true"]{
         visible.push({ type: 'group', group, visibleSessions: shown, hidden: group.sessions.length - shown.length });
       }
       const allVisible = filtered;
+      // 「全选」只应勾选**界面上真的看得见**的那些：折叠组里和被 limit 截断的
+      // 会话虽然属于当前过滤结果，但用户看不到，一起勾上再批量删就是误删。
+      const shownIds = new Set();
+      for (const entry of visible) for (const session of entry.visibleSessions) shownIds.add(session.id);
+      const selectable = allVisible.filter((session) => shownIds.has(session.id));
       return h('aside', { className: 'cw-rail' + (batch ? ' batch' : ''), 'data-provider': provider },
         h('div', { className: 'cw-rail-head' },
           h('div', { className: 'cw-rail-title-row' },
@@ -3462,7 +3477,7 @@ button.cw-pill[aria-expanded="true"]{
         ),
         batch ? h('div', { className: 'cw-batch' },
           h('span', { className: 'cw-bcount' }, '已选 ' + selected.size + ' 项'),
-          h('button', { onClick: () => selectAll(allVisible) }, '全选'),
+          h('button', { onClick: () => selectAll(selectable) }, '全选'),
           h('button', { onClick: onArchiveSelected }, '归档'),
           h('button', { className: 'danger', onClick: onDeleteSelected }, '删除'),
           h('button', { onClick: onExitBatch }, '退出'),
@@ -3561,6 +3576,12 @@ button.cw-pill[aria-expanded="true"]{
       }
       const [inspWidth, setInspWidth] = useState(inspWidthPref.current >= 240 ? inspWidthPref.current : 272);
       const inspDrag = useRef(null);
+      /* 拖拽时挂在 window 上的 pointermove/pointerup 需要在卸载时摘掉：
+         否则中途切走面板，onMove 会一直挂在 window 上，继续对已卸载的组件 setState。 */
+      const dragCleanupRef = useRef(null);
+      useEffect(() => () => {
+        if (dragCleanupRef.current) dragCleanupRef.current();
+      }, []);
       /* 「自定义规则」编辑器：CLAUDE.md / AGENTS.md 的读写入口 */
       const [rulesOpen, setRulesOpen] = useState(false);
       /* 右栏默认落在「文件」（跟 DSH 一样先看文件树）；「运行状态」在标签条右端的
@@ -3785,7 +3806,11 @@ button.cw-pill[aria-expanded="true"]{
                     setSessions((list) => mergeSession(list, event.session));
                   } else if (event.type === 'approval') {
                     setDetail((current) => current ? { ...current, session: { ...current.session, pending: event.pending } } : current);
-                    setSessions((list) => mergeSession(list, { ...(currentSessionRef.current || {}), id: currentId, pending: event.pending, pendingCount: event.pending ? 1 : 0 }));
+                    // 只更新这条会话的 pending 字段。原来是展开 currentSessionRef 再覆盖 id，
+                    // 切换会话的瞬间会把上一个会话的 title/provider 写到新会话头上。
+                    setSessions((list) => list.map((item) => (item.id === currentId
+                      ? { ...item, pending: event.pending, pendingCount: typeof event.pendingCount === 'number' ? event.pendingCount : (event.pending ? 1 : 0) }
+                      : item)));
                     if (!event.pending) setApprovalResult(null);
                   } else if (event.type === 'item') {
                     setDetail((current) => {
@@ -4015,10 +4040,18 @@ button.cw-pill[aria-expanded="true"]{
           const prompt = pendingPrompt;
           setPendingPrompt('');
           if (prompt) {
-            await api('/sessions/' + result.session.id + '/message', { method: 'POST', body: JSON.stringify({ text: prompt }) });
+            try {
+              await api('/sessions/' + result.session.id + '/message', { method: 'POST', body: JSON.stringify({ text: prompt }) });
+            } catch (error) {
+              // 会话建好了但首条消息没发出去：把内容放回输入框，别让用户重打一遍。
+              setDraft(prompt);
+              showToast('首条消息未发出，已放回输入框：' + error.message);
+            }
           }
+          return true;
         } catch (error) {
           showToast(error.message);
+          return false;
         }
       };
 
@@ -4163,12 +4196,15 @@ button.cw-pill[aria-expanded="true"]{
           const body = (override == null ? draft : override).trim();
           if (!body) return;
           const plan = planMode ? planPrefix(topProvider) : '';
-          setPendingPrompt(plan + (fileRef ? '@' + fileRef + ' ' : '') + body);
+          const composed = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+          setPendingPrompt(composed);
           setDraft('');
           setFileRef('');
           setSkillRefs([]);
           setPlanMode(false);
-          await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''));
+          const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''));
+          // 建会话失败时把原文放回输入框：原来草稿已经清空，长文本就此静默丢失。
+          if (!created) setDraft(composed);
           return;
         }
         const body = (override == null ? draft : override).trim();
@@ -4211,7 +4247,10 @@ button.cw-pill[aria-expanded="true"]{
         const result = await patchSession(id, { archived: true });
         if (!result) return;
         if (id === currentId) {
-          const next = sessions.find((item) => item.id !== id && !item.archived);
+          // 回退指针必须按当前助手的范围找：原来不分 provider，
+          // 归档一个 Codex 会话后可能跳到 Claude 会话，导致中栏落进空态。
+          const next = sessions.find((item) => item.id !== id && !item.archived
+            && (item.provider || 'claude') === topProvider);
           if (next) selectSession(next.id); else setCurrentId(null);
         }
         showToast('已归档「' + (session ? session.title : '会话') + '」', { label: '撤销', onClick: () => restore(id) });
@@ -4250,22 +4289,30 @@ button.cw-pill[aria-expanded="true"]{
         if (!confirmBox || confirmBox.kind !== 'delete' || confirmBox.busy) return;
         const ids = confirmBox.ids.slice();
         setConfirmBox({ ...confirmBox, busy: true, error: '' });
-        try {
-          for (const id of ids) await api('/sessions/' + id, { method: 'DELETE' });
-          setSessions((list) => list.filter((item) => !ids.includes(item.id)));
-          if (ids.includes(currentId)) {
-            const next = sessions.find((item) => !ids.includes(item.id) && !item.archived
-              && (item.provider || 'claude') === topProvider);
-            setCurrentId(next ? next.id : null);
-            setDetail(null);
-          }
-          setSelected(new Set());
-          setBatch(false);
-          setConfirmBox(null);
-          showToast(ids.length > 1 ? '已删除 ' + ids.length + ' 个会话' : '已删除会话');
-        } catch (error) {
-          setConfirmBox({ ...confirmBox, busy: false, error: error.message });
+        // 逐条删、逐条记失败：整批 try 的话，中间一条失败会留下「前面已删、后面没删」
+        // 的半成品状态，而重试又从第一条开始，必然再撞到已删除的 id，永远删不完。
+        const failed = [];
+        for (const id of ids) {
+          try { await api('/sessions/' + id, { method: 'DELETE' }); }
+          catch (error) { failed.push({ id, message: error.message }); }
         }
+        const doneIds = ids.filter((id) => !failed.some((entry) => entry.id === id));
+        setSessions((list) => list.filter((item) => !doneIds.includes(item.id)));
+        if (doneIds.includes(currentId)) {
+          const next = sessions.find((item) => !doneIds.includes(item.id) && !item.archived
+            && (item.provider || 'claude') === topProvider);
+          setCurrentId(next ? next.id : null);
+          setDetail(null);
+        }
+        setSelected(new Set());
+        setBatch(false);
+        if (failed.length) {
+          // 确认框只留失败的那些，重试是幂等的
+          setConfirmBox({ ...confirmBox, ids: failed.map((entry) => entry.id), busy: false, error: '有 ' + failed.length + ' 个删除失败：' + failed[0].message });
+          return;
+        }
+        setConfirmBox(null);
+        showToast(ids.length > 1 ? '已删除 ' + ids.length + ' 个会话' : '已删除会话');
       };
 
       const ctxAction = async (action) => {
@@ -4322,7 +4369,9 @@ button.cw-pill[aria-expanded="true"]{
         setSelected(new Set());
         setBatch(false);
         if (ids.includes(currentId)) {
-          const next = sessions.find((item) => !ids.includes(item.id) && !item.archived);
+          // 同 archive()：回退要守住当前助手的作用域
+          const next = sessions.find((item) => !ids.includes(item.id) && !item.archived
+            && (item.provider || 'claude') === topProvider);
           if (next) selectSession(next.id); else setCurrentId(null);
         }
         showToast('已归档 ' + ids.length + ' 个会话');
@@ -4479,6 +4528,7 @@ button.cw-pill[aria-expanded="true"]{
         };
         const onUp = () => {
           inspDrag.current = null;
+          dragCleanupRef.current = null;
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
           setInspWidth((value) => {
@@ -4486,6 +4536,7 @@ button.cw-pill[aria-expanded="true"]{
             return value;
           });
         };
+        dragCleanupRef.current = onUp;
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
       };
@@ -4619,7 +4670,10 @@ button.cw-pill[aria-expanded="true"]{
        * 宽度跟着输入卡走（DSH 的 trigger menu 就是 left:0 / right:0 贴在输入卡上），
        * 所以它挂在 .cw-inputbox 里，不是挂在 28px 的小按钮上。
        */
-      const PickerPop = () => !picker ? null : h('div', { className: 'cw-pop cw-picker-pop', role: 'menu', 'aria-label': '选择器' },
+      /* 这两个是「渲染函数」而不是组件：直接调用得到元素，不能当组件类型去渲染。
+         写成组件的话每次 App 渲染都会产生新的函数类型，React 视为不同组件整体重挂，
+         会话运行中每秒一次的 tick 会让浮层每秒重建（滚动位置、hover 全丢）。 */
+      const renderPickerPop = () => !picker ? null : h('div', { className: 'cw-pop cw-picker-pop', role: 'menu', 'aria-label': '选择器' },
         h('div', { className: 'cw-pop-title' }, picker.kind === 'file' ? '引用项目文件' : picker.kind === 'skill' ? '技能（' + providerMeta(currentProvider).label + '）' : 'CLI 斜杠命令'),
         picker.kind === 'skill' && picker.items.length === 0
           ? h('div', { className: 'cw-pop-note' },
@@ -4649,7 +4703,7 @@ button.cw-pill[aria-expanded="true"]{
       );
       /* 浮层都挂在**被点的那个按钮**上（不再锚到整条 dock）：
          锚点元素自己就是 position: relative，弹层贴着按钮上沿展开。 */
-      const ModelMenu = () => h('div', {
+      const renderModelMenu = () => h('div', {
         className: 'cw-pop cw-model-pop',
         role: 'menu',
         'aria-label': '模型',
@@ -5046,7 +5100,7 @@ button.cw-pill[aria-expanded="true"]{
                       h('span', { className: 'cw-picker-label' }, (viewSession && viewSession.model ? viewSession.model.split('/').pop() : '默认模型')),
                       h(Icon, { name: 'chevDown', size: 11 }),
                       ),
-                      menu === 'model' ? h(ModelMenu) : null,
+                      menu === 'model' ? renderModelMenu() : null,
                     ),
                     fileRef ? h('span', { className: 'cw-ref' },
                       h(Icon, { name: 'file', size: 12 }),
@@ -5084,7 +5138,7 @@ button.cw-pill[aria-expanded="true"]{
                 ),
                 /* 选择浮层挂在输入卡上（不是挂在 28px 的小按钮上）：宽度跟输入卡一致，
                    这正是 DSH trigger menu 的做法（left:0 / right:0 贴着输入卡）。 */
-                picker ? h(PickerPop) : null,
+                picker ? renderPickerPop() : null,
               ),
               h(StatsRow, { session: viewSession, items }),
             ),
@@ -5284,6 +5338,42 @@ button.cw-pill[aria-expanded="true"]{
       );
     }
 
+    /**
+     * 兜底错误边界。App 是一棵手写 h() 的大树，任何一处数据形状异常（Host 版本不一致、
+     * 第三方数据畸形）都会让整块面板白屏，而且没有任何恢复入口——只能切走再切回。
+     * 这里降级成「出错了 + 重新加载」，至少用户能自救。
+     */
+    class WorkbenchBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error) {
+        try { console.error('[cli-workbench]', error); } catch { /* ignore */ }
+      }
+
+      render() {
+        if (!this.state.error) return this.props.children;
+        const message = String((this.state.error && this.state.error.message) || this.state.error);
+        return h('div', { className: 'cw-fatal', role: 'alert' },
+          h(Icon, { name: 'alert', size: 20 }),
+          h('div', { className: 'cw-fatal-title' }, '工作台出错了'),
+          h('div', { className: 'cw-fatal-note' }, message),
+          h('button', {
+            className: 'cw-btn',
+            onClick: () => { try { window.location.reload(); } catch { /* ignore */ } },
+          }, '重新加载'),
+        );
+      }
+    }
+
+    const GuardedApp = () => h(WorkbenchBoundary, null, h(App));
+
     return {
       inject: ['slots'],
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
@@ -5294,7 +5384,7 @@ button.cw-pill[aria-expanded="true"]{
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: 'cli-workbench',
-        }, App));
+        }, GuardedApp));
         // 返回 undefined 的注入函数不会被回收，所以图标组件跟着面板一起注册。
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
