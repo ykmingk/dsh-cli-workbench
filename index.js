@@ -419,6 +419,9 @@ class Workbench {
     /* 实例标识：DSH 会在闲置后卸载插件、切回时重新挂载。写进日志就能区分
        「同一次挂载内的操作」和「某个旧实例拿着过时状态覆盖文件」。 */
     this.instanceId = idOf('wb');
+    // 本实例的出生时间：save() 的 GC 用它区分「我启动前就在磁盘上的孤儿」
+    // 和「并行实例刚写的文件」，后者不归我删。
+    this.startedAt = Date.now() - 5000;
     // MCP 桥脚本的绝对路径：以 index.js 为基准算出来的，适配器通过实例取用
     this.mcpScript = MCP_SCRIPT;
     this.statusCache = { at: 0, value: null };
@@ -522,8 +525,7 @@ class Workbench {
         });
       }
       for (const raw of list) {
-        if (!raw || typeof raw !== 'object' || !raw.id) continue;
-        const session = {
+        if (!raw || typeof raw !== 'object' || !raw.id) continue;        const session = {
           id: String(raw.id),
           provider: raw.provider === 'codex' ? 'codex' : 'claude',
           cwd: realCwd(text(raw.cwd)),
@@ -561,6 +563,13 @@ class Workbench {
           }
         }
         this.sessions.set(session.id, session);
+      }
+      /* 回填 serialized：save() 靠它判断「内容变没变」。不回填的话，
+         每次挂载后的第一次 save 都会把全部会话文件重写一遍。 */
+      if (!legacy) {
+        for (const session of this.sessions.values()) {
+          this.serialized.set(session.id, JSON.stringify(this.persistCopy(session)));
+        }
       }
       if (storedWorkspaces === null && this.sessions.size) {
         // First start on this build: every directory that already has a session
@@ -633,6 +642,11 @@ class Workbench {
     try {
       this.dirty = false;
       mkdirSync(this.sessionsDir, { recursive: true });
+      /* 多实例保护：GC 只清理**本实例启动之前**就存在的孤儿。
+         DSH 会在闲置后卸载/重挂插件，可能同时有两个实例：旧实例的内存里没有
+         新实例刚建的会话，无条件清理会把别人刚写的文件当垃圾删掉
+         （表现就是「刚建的会话重启后消失」）。 */
+      const gcFloor = this.startedAt;
       for (const session of this.sessions.values()) {
         const payload = JSON.stringify(this.persistCopy(session));
         if (!force && this.serialized.get(session.id) === payload) continue;
@@ -645,9 +659,12 @@ class Workbench {
       try {
         for (const name of readdirSync(this.sessionsDir)) {
           if (!name.endsWith('.json')) continue;
+          const full = path.join(this.sessionsDir, name);
           const id = name.slice(0, -'.json'.length);
           if (this.sessions.has(id)) continue;
-          rmSync(path.join(this.sessionsDir, name), { force: true });
+          // 文件比本实例新 → 是并行实例写的，别动它
+          try { if (!force && statSync(full).mtimeMs > gcFloor) continue; } catch { /* 读不到就按旧规则走 */ }
+          rmSync(full, { force: true });
           this.serialized.delete(id);
         }
       } catch { /* 清理失败不影响本次写入 */ }

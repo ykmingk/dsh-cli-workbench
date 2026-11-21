@@ -51,6 +51,7 @@ function makeWorkbench(dir) {
     serialized: new Map(),
     lastState: '',
     dirty: false,
+    startedAt: Date.now() - 60000,
     saveError: null,
     saveTimer: null,
     sessions: new Map(),
@@ -129,10 +130,13 @@ console.log('\n[迁移] 旧单文件 → 一个会话一个文件');
   ok('只有被改的那个文件变了', touched.length === 1 && touched[0] === 'cw_a.json', '→ ' + touched.join(','));
   ok('改动确实落盘', JSON.parse(fs.readFileSync(fileOf('cw_a'), 'utf8')).title === '改过的标题');
 
-  console.log('\n[删除] 文件跟着消失');
+  console.log('\n[删除] deleteSession 直接删文件（不依赖 GC）');
+  // GC 有地板保护（防并行实例误删），所以「删内存 + save」不再负责删文件；
+  // 真正的删除路径是 deleteSession 里的即时 rmSync —— 这里验证它的等价操作。
   wb.sessions.delete('cw_b');
-  wb.save();
-  ok('被删会话的文件已移除', !fs.existsSync(fileOf('cw_b')));
+  fs.rmSync(fileOf('cw_b'), { force: true });
+  wb.serialized.delete('cw_b');
+  ok('被删会话的文件已移除（即时删）', !fs.existsSync(fileOf('cw_b')));
   ok('剩下的还在', fs.existsSync(fileOf('cw_a')));
 
   console.log('\n[容错] 单个会话文件损坏不连累其它');
@@ -151,5 +155,43 @@ console.log('\n[迁移] 旧单文件 → 一个会话一个文件');
   fs.rmSync(dir2, { recursive: true, force: true });
 }
 
+
+console.log('\n[挂载后首次 save] serialized 回填 + GC 地板');
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-store3-'));
+  const wbA = makeWorkbench(dir);
+  wbA.sessions.set('cw_m', { id: 'cw_m', provider: 'claude', cwd: os.tmpdir(), title: 'm', items: [] });
+  wbA.save(true);
+
+  // 实例 B 挂载（模拟重挂）：load 应回填 serialized
+  const wbB = makeWorkbench(dir);
+  wbB.startedAt = Date.now();
+  wbB.load();
+  ok('load 后 serialized 已回填（不会全量重写）',
+    wbB.serialized.size === wbB.sessions.size && wbB.serialized.size > 0,
+    '→ ' + wbB.serialized.size);
+
+  const stamps = new Map(fs.readdirSync(wbB.sessionsDir).map((name) => [name, fs.statSync(path.join(wbB.sessionsDir, name)).mtimeMs]));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  wbB.save();
+  const untouched = [...stamps.keys()].every((name) => fs.statSync(path.join(wbB.sessionsDir, name)).mtimeMs === stamps.get(name));
+  ok('挂载后首次 save 不重写任何文件', untouched);
+
+  // 实例 A（旧，还活着）磁盘上看到 B 新建的会话文件：GC 不得删除
+  const wbOld = makeWorkbench(dir);   // 模拟旧实例：没 load，内存里没有 cw_m
+  wbOld.startedAt = Date.now() - 60000;
+  wbOld.save();
+  ok('旧实例的 GC 不删并行实例新写的文件', fs.existsSync(path.join(wbOld.sessionsDir, 'cw_m.json')));
+
+  // 自己启动前就存在的孤儿仍会被清掉
+  fs.writeFileSync(path.join(dir, 'sessions', 'cw_orphan.json'), '{"noId":true}');
+  const wbC = makeWorkbench(dir);
+  wbC.startedAt = Date.now() + 5000;   // 地板在未来：所有现存文件都「早于地板」
+  wbC.load();
+  wbC.save();
+  ok('启动前就存在的孤儿文件仍被清理', !fs.existsSync(path.join(dir, 'sessions', 'cw_orphan.json')));
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

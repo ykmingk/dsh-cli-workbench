@@ -4109,7 +4109,7 @@ button.cw-pill[aria-expanded="true"]{
         setShowNew(true);
       };
 
-      const createSession = async (provider, cwd) => {
+      const createSession = async (provider, cwd, options) => {
         try {
           const result = await api('/sessions', { method: 'POST', body: JSON.stringify({ provider, cwd }) });
           setSessions((list) => [result.session, ...list]);
@@ -4118,7 +4118,11 @@ button.cw-pill[aria-expanded="true"]{
           setCurrentId(result.session.id);
           setDetail({ session: result.session, items: [] });
           setShowNew(false);
-          const prompt = pendingPrompt;
+          /* 首条消息必须走参数传进来：不能读 pendingPrompt 状态。
+             React 的 setState 在同一个事件 tick 里不生效，send() 先 setPendingPrompt
+             再同步调到这里时，闭包里的 pendingPrompt 还是上一轮的旧值——
+             表现就是「空态直接发送，会话建了但消息没发出去」。 */
+          const prompt = options && typeof options.prompt === 'string' ? options.prompt : pendingPrompt;
           setPendingPrompt('');
           if (prompt) {
             try {
@@ -4278,7 +4282,7 @@ button.cw-pill[aria-expanded="true"]{
           setFileRef('');
           setSkillRefs([]);
           setPlanMode(false);
-          const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''));
+          const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''), { prompt: composed });
           // 建会话失败时把原文放回输入框：原来草稿已经清空，长文本就此静默丢失。
           if (!created) setDraft(composed);
           return;
@@ -4387,8 +4391,18 @@ button.cw-pill[aria-expanded="true"]{
         setSelected(new Set());
         setBatch(false);
         if (failed.length) {
-          // 确认框只留失败的那些，重试是幂等的
-          setConfirmBox({ ...confirmBox, ids: failed.map((entry) => entry.id), busy: false, error: '有 ' + failed.length + ' 个删除失败：' + failed[0].message });
+          // 确认框只留失败的那些，重试是幂等的（Host 对不存在的 id 返回 404，
+          // 计入失败但不阻塞其它条目）。名字与标题跟着剩余数量更新，
+          // 否则重试框还写着「删除 5 个会话」，列表里却只剩 1 个。
+          const remaining = sessions.filter((item) => failed.some((entry) => entry.id === item.id));
+          setConfirmBox({
+            ...confirmBox,
+            ids: failed.map((entry) => entry.id),
+            names: remaining.map((item) => item.title),
+            title: failed.length > 1 ? '删除 ' + failed.length + ' 个会话（重试）' : '删除会话（重试）',
+            busy: false,
+            error: '有 ' + failed.length + ' 个删除失败：' + failed[0].message,
+          });
           return;
         }
         setConfirmBox(null);
