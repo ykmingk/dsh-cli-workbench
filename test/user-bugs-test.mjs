@@ -176,7 +176,11 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('按钮行放不下时换行而不是压字', /flexWrap: 'wrap', gap: '6px', marginTop: '8px'/.test(srcClient));
   ok('浏览优先弹系统选择器', /workspaceApi\.pickDirectory\(\)/.test(srcClient));
   ok('系统选择器不可用才回落内建列表', /catch \{ \/\* 没有 native 选择器，走下面的内建列表 \*\/ \}/.test(srcClient));
-  ok('README 写了 link→git 的 EPERM 坑', /ERR_PNPM_EPERM|EPERM: operation not permitted/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
+  const readme = fs.readFileSync(path.join(BASE, 'README.md'), 'utf8');
+  ok('README 写了 EPERM 迁移提示', /ERR_PNPM_EPERM/.test(readme));
+  ok('README 说明更新来源与隐私', /唯一的外部请求/.test(readme));
+  ok('README 只保留仓库地址一种安装方式', /### 用仓库地址安装/.test(readme) && !/### 从本地目录安装/.test(readme) && !/npm pack/.test(readme));
+  ok('README 写明能一键升级', /立即升级/.test(readme));
 }
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
