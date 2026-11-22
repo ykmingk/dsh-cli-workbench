@@ -127,9 +127,10 @@ console.log('\n[1.0.27] Codex 配置忽略警告不算失败（用户朋友机�
 console.log('\n[1.0.29] 朋友机器的两个问题：目录选择器 + 打开文件夹 + npm 依赖');
 {
   // 1. 目录选择器不再依赖 DSH 的 pickDirectory（browse 后端会报 unavailable）
-  ok('客户端不再调用 uiWorkspace.pickDirectory', !/workspaceApi\s*(&&\s*workspaceApi\s*)?\.\s*pickDirectory|uiWorkspace'\)?\.\s*pickDirectory/.test(srcClient));
+  ok('浏览优先调系统选择器，失败才回落内建列表',
+    /const browse = async[\s\S]{0,400}workspaceApi\.pickDirectory\(\)[\s\S]{0,400}setPicking\(true\)/.test(srcClient));
   ok('存在插件自建的目录选择器组件', /function DirPicker\(/.test(srcClient));
-  ok('新建会话的浏览按钮用自建选择器', /const browse = \(\) => setPicking\(true\)/.test(srcClient));
+  ok('浏览按钮已接回系统选择器', /const browse = async \(\) => \{/.test(srcClient));
   ok('添加工作区也走自建选择器', /setWsPickerOpen\(true\)/.test(srcClient));
   ok('Host 提供 /dirs 目录列表（只读、只列文件夹）',
     /route === '\/dirs' && method === 'GET'/.test(srcIndex)
@@ -162,7 +163,12 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('能判断安装形态（目录 / 包）', /const SELF_INSTALL = \(\(\) => \{/.test(srcIndex));
   ok('junction 用 lstat 识别为符号链接', /lstatSync\(dir\)\.isSymbolicLink\(\)/.test(srcIndex));
   ok('/version 返回安装形态', /install: SELF_INSTALL\.kind/.test(srcIndex));
-  ok('包安装与目录安装给不同的更新提示', /selfVersion\.install === 'package'/.test(srcClient));ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
+  ok('包安装与目录安装给不同的更新提示', /selfVersion\.install === 'package'/.test(srcClient));  ok('目录项不被 flex 压缩（目录一多就挤成一团）', /\.cw-diritem\{[^}]*flex: none;/.test(srcClient));
+  ok('按钮文字不换行（窄容器里会竖排）', /\.cw-btn\{[\s\S]{0,300}white-space: nowrap;/.test(srcClient));
+  ok('按钮行放不下时换行而不是压字', /flexWrap: 'wrap', gap: '6px', marginTop: '8px'/.test(srcClient));
+  ok('浏览优先弹系统选择器', /workspaceApi\.pickDirectory\(\)/.test(srcClient));
+  ok('系统选择器不可用才回落内建列表', /catch \{ \/\* 没有 native 选择器，走下面的内建列表 \*\/ \}/.test(srcClient));
+  ok('README 写了 link→git 的 EPERM 坑', /ERR_PNPM_EPERM|EPERM: operation not permitted/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
 }
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

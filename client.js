@@ -23,6 +23,9 @@ window.__ModuleLoader__.load({
       { id: 'bypass', label: '完全访问', hint: '跳过沙箱，命令与写文件都直接执行' },
     ];
         let layoutApi = null;
+  /* DSH 的系统目录选择器。装了 native 后端时它会弹资源管理器；
+     在部分装配（browse 后端）下没有 pick 能力，会抛错——那时回落到内建目录列表。 */
+  let workspaceApi = null;
     /* 面板切走再切回来时组件会整个重挂载；上一次拿到的 /status 先顶上，
        免得会话列表已经回来了、状态灯还在「启动中」。 */
     const CACHE = { boot: null };
@@ -934,6 +937,7 @@ window.__ModuleLoader__.load({
 .cw-btn{
   height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px;
   border: 0; border-radius: var(--cw-radius-sm);
+  white-space: nowrap;
   background: transparent; color: var(--cw-text); font-size: var(--cw-fs-sm); line-height: var(--cw-lh-sm);
   box-shadow: inset 0 0 0 .5px var(--cw-border-3);
 }
@@ -942,7 +946,7 @@ window.__ModuleLoader__.load({
 .cw-btn.primary{ background: var(--cw-accent); color: var(--cw-on-accent); box-shadow: none; }
 .cw-btn.primary:hover{ background: var(--cw-accent-hover); }
 .cw-btn.danger{ color: var(--cw-danger); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--cw-danger) 50%, transparent); }
-.cw-btn.sm{ height: 26px; padding: 0 9px; font-size: var(--cw-fs-xs); }
+.cw-btn.sm{ height: 26px; padding: 0 9px; font-size: var(--cw-fs-xs); flex: none; }
 .cw-ap-resolved{
   margin-top: 12px; padding: 9px 12px; border-radius: var(--cw-radius-sm);
   font-size: var(--cw-fs-sm); background: var(--cw-sub);
@@ -1579,7 +1583,7 @@ button.cw-pill[aria-expanded="true"]{
 /* 目录选择器：列表可滚动，行是整行按钮，键盘也能走 */
 .cw-dirlist{ margin-top: 10px; max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 1px;
   border: .5px solid var(--cw-border); border-radius: var(--cw-radius-sm); background: var(--cw-bg); padding: 4px; }
-.cw-diritem{ display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; border-radius: var(--cw-radius-sm);
+.cw-diritem{ display: flex; align-items: center; gap: 8px; height: 28px; flex: none; padding: 0 8px; border: 0; border-radius: var(--cw-radius-sm);
   background: transparent; color: var(--cw-text); font-size: var(--cw-fs-sm); text-align: left; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cw-diritem:hover{ background: var(--cw-hover); }
@@ -2587,7 +2591,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               : h('div', { className: 'cw-mem no' },
                 h(Icon, { name: 'file', size: 13 }), ruleLabel + ' 未找到'),
             h('div', { className: 'cw-mem-note' }, '用户级对所有项目生效，项目级只对当前目录生效。'),
-            h('div', { style: { display: 'flex', gap: '6px', marginTop: '8px' } },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' } },
               h('button', { className: 'cw-btn sm', onClick: onEditRules },
                 h(Icon, { name: 'edit', size: 12 }), '编辑自定义规则'),
               h('button', { className: 'cw-btn sm', onClick: onRefresh },
@@ -3431,7 +3435,21 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const dialogRef = useRef(null);
       useTrap(dialogRef);
       useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
-      const browse = () => setPicking(true);
+      const browse = async () => {
+        /* 先请 DSH 弹系统的目录选择器（资源管理器那个框）。它是 native 后端时最快、
+           也最符合习惯；只有在没有这个能力（browse 后端会抛错）时才回落到内建列表。 */
+        setBusy(true);
+        try {
+          if (workspaceApi && typeof workspaceApi.pickDirectory === 'function') {
+            const picked = await workspaceApi.pickDirectory();
+            setBusy(false);
+            if (picked) setCwd(picked);
+            return;   // 用户取消也到此为止，不再弹第二个选择器
+          }
+        } catch { /* 没有 native 选择器，走下面的内建列表 */ }
+        setBusy(false);
+        setPicking(true);
+      };
       const create = async () => {
         if (busy) return;
         setBusy(true);
@@ -4419,8 +4437,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       };
 
       const addWorkspace = async () => {
-        /* 用插件自己的目录选择器：DSH 的 pickDirectory 在部分装配下没有实现，
-           原来点「把目录添加为工作区」会毫无反应。 */
+        /* 先请 DSH 弹系统选择器；没有这个能力时回落到内建目录列表。 */
+        try {
+          if (workspaceApi && typeof workspaceApi.pickDirectory === 'function') {
+            const picked = await workspaceApi.pickDirectory();
+            if (picked) { await restoreWorkspace(picked); return; }
+            return;
+          }
+        } catch { /* 没有 native 选择器，走下面的内建列表 */ }
         setWsPickerOpen(true);
       };
 
@@ -5672,6 +5696,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       __parts: { TurnRail, TodoCard, RulesDialog, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
                 try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
+        try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: 'cli-workbench',

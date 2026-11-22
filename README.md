@@ -81,6 +81,38 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 注意：这样装出来的包不会被固定到某个 commit，所以 DSH 插件页不会出现「更新」按钮；
 想主动知道有没有新版，打开工作台的 **设置 → CLI 版本与升级**。
 
+#### 从「本地目录」换成「仓库地址」时会报 EPERM
+
+如果你**先用本地目录装过**，之后改用 git 地址重装，pnpm 会报：
+
+```
+[ERR_PNPM_EPERM] [importPackage ...\node_modules\dsh-cli-workbench]
+EPERM: operation not permitted, rename '...dsh-cli-workbench_tmp_xxxx' -> '...dsh-cli-workbench'
+```
+
+原因：本地目录安装写进 profile 的是 `link:` 依赖，pnpm 在 `node_modules` 里留下的是
+一个**目录联接（Junction）**。卸载只摘掉了依赖记录，联接点本身还留在原地，于是按
+git 地址安装时无法覆盖这个路径。
+
+**解决办法**：先完全退出 DSH 桌面版，删掉那个联接点，再装。
+
+```powershell
+# 1. 确认它是联接（输出里应看到 LinkType : Junction）
+Get-Item "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-cli-workbench" | Select-Object LinkType, Target
+
+# 2. 删掉联接点（只删链接，不动你的源目录）
+[System.IO.Directory]::Delete("$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-cli-workbench", $false)
+
+# 3. 重新按仓库地址安装
+dsh plugin --profile desktop add https://gitcode.com/yk1900/dsh-cli-workbench.git
+```
+
+把 `desktop` 换成你自己的 profile 名。删之前先确认第 1 步输出里 `Target` 指向你的
+插件源码目录——`LinkType` 为空说明它不是联接，别删。
+
+**为什么推荐直接用仓库地址**：全程只有一个安装形态，不会在 link 和 package 之间来回切换，
+也就不会踩到上面这个坑。
+
 没装 Git 的机器请用上面的 **下载 ZIP + 选本地目录**，效果完全一样。
 另外也可以用 `.tgz` 包安装（`npm pack` 生成的压缩包，同样是本地路径，不经过 Git）。
 
