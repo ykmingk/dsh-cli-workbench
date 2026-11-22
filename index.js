@@ -31,12 +31,14 @@ const SELF_VERSION = (() => {
   }
 })();
 
-/* 读最新版本号的几个来源，按顺序试。
-   没有走 GitHub raw：国内网络经常连不上；jsDelivr 的镜像对国内更稳。 */
+/* 读最新版本号的几个来源，并行竞速、谁先答对用谁。
+   首选 gitcode 的 contents API：国内直连、约 0.5 秒、不受 CDN 缓存影响
+   （jsDelivr 对 @main 有十几小时缓存，刚发布的新版本读不到）。
+   jsDelivr 的 @latest 作为备选；不用 GitHub raw —— 国内经常连不上。 */
 const VERSION_SOURCES = [
-  'https://fastly.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
-  'https://gcore.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
-  'https://cdn.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
+  { url: 'https://gitcode.com/api/v5/repos/yk1900/dsh-cli-workbench/contents/package.json', kind: 'gitcode' },
+  { url: 'https://fastly.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@latest/package.json', kind: 'json' },
+  { url: 'https://gcore.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@latest/package.json', kind: 'json' },
 ];
 const PROVIDERS = {
   claude: { label: 'Claude Code', pkg: '@anthropic-ai/claude-code' },
@@ -1784,14 +1786,21 @@ class Workbench {
     /* 几个镜像并行问，谁先答对就用谁：串行的话最慢那个会把总耗时拖到 8 秒以上
        （实测 fastly 超时后 gcore 才返回）。Promise.any 拿到第一个成功的即可。 */
     try {
-      const answers = await Promise.any(VERSION_SOURCES.map(async (url) => {
-        const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const answers = await Promise.any(VERSION_SOURCES.map(async (source) => {
+        const response = await fetch(source.url, { signal: AbortSignal.timeout(6000) });
         if (!response.ok) throw new Error('HTTP ' + response.status);
-        const pkg = await response.json();
-        if (!pkg || typeof pkg.version !== 'string' || !/^\d+\.\d+/.test(pkg.version)) {
-          throw new Error('返回内容里没有版本号');
+        const body = await response.json();
+        /* gitcode 的 contents API 把文件内容放在 base64 里；jsDelivr 直接给 package.json */
+        let version = '';
+        if (source.kind === 'gitcode') {
+          const decoded = Buffer.from(String(body.content || ''), 'base64').toString('utf8');
+          const pkg = JSON.parse(decoded);
+          version = pkg && typeof pkg.version === 'string' ? pkg.version : '';
+        } else {
+          version = body && typeof body.version === 'string' ? body.version : '';
         }
-        return { latest: pkg.version, source: url };
+        if (!/^\d+\.\d+/.test(version)) throw new Error('返回内容里没有版本号');
+        return { latest: version, source: source.url };
       }));
       latest = answers.latest;
       source = answers.source;
