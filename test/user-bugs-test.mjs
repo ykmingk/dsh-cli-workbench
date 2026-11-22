@@ -158,7 +158,8 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('版本比较不能直接比字符串', /function compareVersion\(left, right\)/.test(srcIndex));
   ok('路由已挂载', /route === '\/version' && method === 'GET'/.test(srcIndex));
   ok('设置页显示插件自身版本', /cli-workbench[\s\S]{0,200}检查中|'CLI 工作台',\s*\n\s*h\('span', \{ className: 'cw-upd-badge/.test(srcClient) || /selfVersion/.test(srcClient));
-  ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
+    ok('「去下载」指向 gitcode（GitHub 在国内常打不开）', /gitcode\.com\/yk1900\/dsh-cli-workbench\/releases/.test(srcClient));
+ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
 }
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

@@ -3107,13 +3107,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   ),
                   h('div', { className: 'cw-upd-compat' },
                     selfVersion && selfVersion.hasUpdate
-                      ? '去仓库下载新版压缩包，解压后在插件页重新选择这个目录即可覆盖安装。'
+                      ? '下载新版压缩包，解压覆盖到当前插件目录后刷新页面即可（用 .tgz 安装的，请在插件页重新选择新包）。'
                       : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
                 ),
                 selfVersion && selfVersion.hasUpdate
                   ? h('a', {
                     className: 'cw-upd-btn',
-                    href: 'https://github.com/ykmingk/dsh-cli-workbench/releases',
+                    /* 指向国内可访问的 gitcode；GitHub 在国内常打不开，只作为次要入口 */
+                    href: 'https://gitcode.com/yk1900/dsh-cli-workbench/releases',
                     target: '_blank',
                     rel: 'noreferrer',
                   }, '去下载')
