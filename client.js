@@ -521,7 +521,7 @@ window.__ModuleLoader__.load({
 .cw-notice .cw-close:hover{ opacity: 1; }
 
 /* ============ 工作区 ============ */
-.cw-main{ flex: 1; display: flex; min-height: 0; position: relative; }
+.cw-main{ flex: 1; display: flex; min-height: 0; min-width: 0; position: relative; }
 
 /* —— 左栏 —— */
 .cw-rail{
@@ -1737,6 +1737,45 @@ button.cw-pill[aria-expanded="true"]{
 .cw-root[data-compact="1"] .cw-railbtn{ display: inline-flex; }
 .cw-root[data-compact="1"] .cw-project{ display: none; }
 @media (max-width: 1180px){ .cw-tasks{ grid-template-columns: 1fr; } }
+
+/* ============================ 缩放 / 窄窗口自适应 ============================
+   Windows 把缩放调到 125% / 150% 时，窗口里可用的 CSS 宽度只剩物理宽度的
+   80% / 67%（1920 → 1536 / 1280）。原来所有尺寸都是固定 px，行一窄就靠挤：
+   药丸按钮里的字被顶出去、发送键被挤出可视区、工具条换行后压住输入框。
+   下面按可用宽度分档收敛，保证「窄了只是更紧凑」，而不是互相顶撞。 */
+
+/* 1) 输入卡底部这一行允许换行，并且换行后行高自己撑开（不然第二行会压住输入框） */
+.cw-input-foot{ flex-wrap: wrap; row-gap: 6px; align-content: center; }
+.cw-input-tools{ flex: 0 1 auto; }
+
+/* 2) 药丸按钮（模型 / 计划 / 技能）：名字再长也不许把整行撑破 */
+.cw-pillbtn, .cw-picker{ flex: 0 1 auto; min-width: 0; max-width: 42vw; }
+.cw-pillbtn{ overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 1180px){
+  /* 栏宽跟着窗口走，别死占 250px */
+  .cw-rail{ width: clamp(196px, 19vw, 250px); }
+  .cw-dock{ padding: 8px 12px 10px; }
+}
+
+@media (max-width: 1040px){
+  /* 右栏（检查器）也收敛一点，中间对话区优先 */
+  .cw-insp{ width: 244px; }
+  /* 再窄一档：药丸只留图标，省出约 90px 给输入框 */
+  .cw-pillbtn .cw-pill-text{ display: none; }
+  .cw-pillbtn{ padding: 0 8px; }
+  .cw-picker{ max-width: 30vw; }
+  .cw-inputbox textarea{ min-height: 64px; }
+}
+
+/* 3) 高度不够时（1366×768 这类笔记本在 125% 下只剩约 614px 高），
+      少留白、少露行，保证输入卡和最后一条消息同时看得见 */
+@media (max-height: 720px){
+  .cw-dock{ padding: 8px 12px 8px; }
+  .cw-rail-head{ padding: 8px 10px 6px; }
+  .cw-rail-title-row{ margin-bottom: 6px; }
+  .cw-inputbox textarea{ min-height: 56px; }
+}
 @keyframes cw-pulse{ 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes cw-spin{ to{ transform: rotate(360deg) } }
 @keyframes cw-blink{ to{ opacity: 0 } }
@@ -5274,7 +5313,7 @@ button.cw-pill[aria-expanded="true"]{
                         title: '技能（本地与工作区的 skills）',
                         'aria-label': '选择技能',
                         onClick: () => openPicker('skill'),
-                      }, h(Icon, { name: 'skill' }), '技能'),
+                      }, h(Icon, { name: 'skill' }), h('span', { className: 'cw-pill-text' }, '技能')),
                     ),
                     h('button', {
                       type: 'button',
@@ -5287,7 +5326,7 @@ button.cw-pill[aria-expanded="true"]{
                           ? '计划模式已开：下一条消息会带上「只做计划、不改文件」的指令'
                           : '计划模式已开：下一条消息会要求先出方案'));
                       },
-                    }, h(Icon, { name: 'clipboard' }), '计划'),
+                    }, h(Icon, { name: 'clipboard' }), h('span', { className: 'cw-pill-text' }, '计划')),
                     /* 模型选择器自带锚点容器：浮层贴着按钮上沿，不再跑到输入卡右边 */
                     h('span', { className: 'cw-anchor' },
                       h('button', {

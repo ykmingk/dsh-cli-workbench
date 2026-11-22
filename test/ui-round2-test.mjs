@@ -129,5 +129,19 @@ console.log('\n[6] Codex 模型目录');
   }
 }
 
+
+console.log('\n[1.0.30] 缩放自适应（Windows 125% / 窄窗口）');
+{
+  ok('输入卡底部行允许换行', /\.cw-input-foot\{ flex-wrap: wrap; row-gap: 6px;/.test(src));
+  ok('药丸按钮可收缩、不会撑破整行',
+    /\.cw-pillbtn, \.cw-picker\{ flex: 0 1 auto; min-width: 0; max-width: 42vw; \}/.test(src));
+  ok('窄窗口下药丸只留图标', /\.cw-pillbtn \.cw-pill-text\{ display: none; \}/.test(src));
+  ok('左栏宽度随窗口收敛', /\.cw-rail\{ width: clamp\(196px, 19vw, 250px\); \}/.test(src));
+  ok('右栏在窄窗口下收窄', /\.cw-insp\{ width: 244px; \}/.test(src));
+  ok('矮窗口少留白', /@media \(max-height: 720px\)/.test(src));
+  ok('中栏可压缩（min-width: 0）', /\.cw-main\{ flex: 1; display: flex; min-height: 0; min-width: 0;/.test(src));
+  ok('缩放自适应规则排在样式末尾（能覆盖前面的固定尺寸）',
+    src.indexOf('.cw-pillbtn .cw-pill-text') > src.indexOf('.cw-dock{'));
+}
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
