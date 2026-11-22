@@ -30,6 +30,18 @@
 
 两个 CLI 至少要有一个；只装一个也能用，另一个的按钮会显示为不可用。
 
+### 命令行安装
+
+```sh
+# 有 NPM 包时（发布后可用，能自动检查新版本）
+dsh plugin --profile web add dsh-cli-workbench
+
+# 直接装仓库源码（需要本机有 Git）
+dsh plugin --profile web add github:ykmingk/dsh-cli-workbench
+```
+
+装完执行 `dsh`（或重启桌面版），在 **插件** 页确认这一行是启用状态。
+
 ### 从本地目录安装（推荐，不需要 Git）
 
 1. 在仓库页面点 **下载 ZIP**（不要用 `git clone`），解压到本地任意目录。
@@ -50,6 +62,23 @@ pnpm 去 **clone**，这要求本机装有 **Git** 并能在命令行里运行 `
 
 所以没装 Git 的机器请用上面的 **下载 ZIP + 选本地目录**，效果完全一样。
 另外也可以用 `.tgz` 包安装（`npm pack` 生成的压缩包，同样是本地路径，不经过 Git）。
+
+### 运行要求
+
+| 项 | 要求 |
+|---|---|
+| DSH | `>=0.2.2-rc.3 <0.3.0`（由 `package.json` 的 `engines.dsh` 声明，版本不符会被直接挡下） |
+| 平台 | Windows（10/11）。插件用 `explorer.exe` 打开文件夹、用 `cmd.exe` 拉起 CLI；macOS / Linux 未适配 |
+| CLI | 本机需已安装并登录 `claude`（Claude Code）或 `codex`（Codex），至少一个 |
+| npm | **可选**。只有「检查最新版本」和「用 npm 升级」会用到；没有 npm 时改用 CLI 自带的 `update` |
+| Git | **可选**。只有用仓库地址安装时才需要 |
+
+### 权限与外部服务
+
+- 在本机拉起 `claude` / `codex` 子进程，工作目录就是会话的工作目录；
+- 通过 DSH 的 Web 服务与页面通信（只监听本机回环地址），不向任何第三方服务器上传数据；
+- 会读写本机的会话数据（默认在 `~/.dsh/cli-workbench/`）、你选择的项目目录，以及 `~/.claude` / `~/.codex` 里 CLI 自己的配置；
+- 「打开文件夹」会调用系统资源管理器；「升级」会调用 npm 或 CLI 自带的更新命令。
 
 ### 检查它是否真的能用
 
