@@ -1711,7 +1711,14 @@ button.cw-pill[aria-expanded="true"]{
 }
 .cw-upd-btn:hover{ background: var(--cw-accent-hover); }
 /* 「去下载」是链接不是按钮：去掉下划线，保持同样的按钮外观 */
-a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }/* 升级命令：等宽字体、可横向滚动，配一个「复制」按钮 */
+.cw-upd-cmd{ display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.cw-upd-cmd code{
+  flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+  padding: 5px 8px; border-radius: var(--cw-radius-sm); background: var(--cw-code-bg);
+  color: var(--cw-text); font-family: var(--cw-mono); font-size: var(--cw-fs-micro); line-height: 1.5;
+}
+.cw-upd-cmd button{ flex: none; }
 
 /* 设置：footer 只留一个「完成」 */
 .cw-set-foot{ display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: .5px solid var(--cw-border); background: var(--cw-sub); }
@@ -2969,7 +2976,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       );
     }
 
-    function SettingsDialog({ sessions, updates, boot, upgrading, defaultSettings, onClose, onRestore, onRestoreAll, onUpgrade, onRefreshUpdates, onSaveDefaults }) {
+    function SettingsDialog({ sessions, updates, boot, upgrading, defaultSettings, onCopy, onClose, onRestore, onRestoreAll, onUpgrade, onRefreshUpdates, onSaveDefaults }) {
       const [query, setQuery] = useState('');
       const dialogRef = useRef(null);
       useTrap(dialogRef);
@@ -3113,10 +3120,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     selfVersion && selfVersion.hasUpdate
                       ? (() => {
                         /* 更新手法取决于当初怎么装的——说错了用户会白折腾：
-                           目录安装要覆盖文件，包安装（tgz / 仓库地址）覆盖没用。 */
-                        const profile = selfVersion.profile ? '--profile ' + selfVersion.profile : '--profile <profile>';
-                        if (selfVersion.install === 'package') {
-                          return '重跑当初的安装命令：dsh plugin ' + profile + ' add <新包或新地址>，或在插件页重新选择新包。';
+                           目录安装要覆盖文件；仓库地址 / tgz 覆盖没用，得重跑安装命令。 */
+                        if (selfVersion.command) {
+                          return '在终端里执行下面这条命令即可升级（不用重新下载解压）。';
                         }
                         if (selfVersion.install === 'link' || selfVersion.install === 'directory') {
                           return '下载新版压缩包，解压覆盖到这个插件目录，然后刷新页面即可。';
@@ -3124,15 +3130,26 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                         return '下载新版压缩包覆盖插件目录，或在插件页重新选择新包。';
                       })()
                       : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
+                  /* 能算出可复跑的命令就直接秀出来：gitcode 安装实测 1 秒装完，
+                     比「打开网页下载压缩包再解压覆盖」省事得多。 */
+                  selfVersion && selfVersion.hasUpdate && selfVersion.command
+                    ? h('div', { className: 'cw-upd-cmd' },
+                      h('code', null, selfVersion.command),
+                      h('button', {
+                        className: 'cw-btn sm',
+                        onClick: () => onCopy(selfVersion.command, '命令已复制，粘贴到 PowerShell 里执行'),
+                      }, '复制'),
+                    )
+                    : null,
                 ),
                 selfVersion && selfVersion.hasUpdate
                   ? h('a', {
                     className: 'cw-upd-btn',
-                    /* 指向国内可访问的 gitcode；GitHub 在国内常打不开，只作为次要入口 */
+                    /* 没有可复跑命令时（目录安装）才给下载入口；指向国内可访问的 gitcode */
                     href: 'https://gitcode.com/yk1900/dsh-cli-workbench/releases',
                     target: '_blank',
                     rel: 'noreferrer',
-                  }, '去下载')
+                  }, selfVersion.command ? '下载安装包' : '去下载')
                   : h('button', { className: 'cw-upd-btn', disabled: selfBusy, onClick: () => checkSelf(true) },
                     selfBusy ? '检查中…' : '重新检查'),
               ),
@@ -5522,7 +5539,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           onClose: () => setRulesOpen(false),
           onToast: (text) => showToast(text),
         }) : null,
-        showSettings ? h(SettingsDialog, {          sessions, updates, boot, upgrading, defaultSettings: defaults,
+        showSettings ? h(SettingsDialog, {          sessions, updates, boot, upgrading, defaultSettings: defaults, onCopy: copyText,
           onClose: () => setShowSettings(false),
           onSaveDefaults: async (next) => {
             try {

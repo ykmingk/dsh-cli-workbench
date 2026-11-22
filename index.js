@@ -46,19 +46,62 @@ const SELF_INSTALL = (() => {
   try {
     dir = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]+$/, '');
   } catch {
-    return { kind: 'unknown', profile: '', dir: '' };
+    return { kind: 'unknown', profile: '', dir: '', spec: '', profileDir: '' };
   }
   // profile 名：...\.dsh\profiles\<name>\node_modules\...
   const match = dir.match(/[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/]/i);
-  const profile = match ? match[1] : '';
+  let profile = match ? match[1] : '';
+  /* profile 目录：优先环境变量。目录安装时 import.meta.url 会被解析成源码的真实路径，
+     从路径里推不出 profile，只能靠 DSH 给的环境变量。 */
+  let profileDir = text(process.env.DSH_PROFILE_DIR || '');
+  if (!profileDir && process.env.DSH_PROFILE) {
+    profileDir = path.join(os.homedir(), '.dsh', 'profiles', process.env.DSH_PROFILE);
+  }
+  if (!profileDir && match) {
+    profileDir = path.join(os.homedir(), '.dsh', 'profiles', profile);
+  }
+  if (!profile && profileDir) profile = path.basename(profileDir);
+
+  /* 我在 profile 里登记成什么依赖——决定「升级命令」该长什么样。
+     git 地址、tgz 路径、npm 版本号，三种写法完全不同。 */
+  let spec = '';
+  if (profileDir) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(profileDir, 'package.json'), 'utf8'));
+      const deps = pkg && pkg.dependencies ? pkg.dependencies : {};
+      const value = deps['dsh-cli-workbench'];
+      if (typeof value === 'string') spec = value;
+    } catch { /* profile 清单读不到就算了 */ }
+  }
+
   try {
-    if (lstatSync(dir).isSymbolicLink()) return { kind: 'link', profile, dir };
-    if (/[\\/]node_modules[\\/][^\\/]+$/.test(dir)) return { kind: 'package', profile, dir };
-    return { kind: 'directory', profile, dir };
+    if (lstatSync(dir).isSymbolicLink()) return { kind: 'link', profile, dir, spec, profileDir };
+    if (/[\\/]node_modules[\\/][^\\/]+$/.test(dir)) return { kind: 'package', profile, dir, spec, profileDir };
+    return { kind: 'directory', profile, dir, spec, profileDir };
   } catch {
-    return { kind: 'unknown', profile, dir };
+    return { kind: 'unknown', profile, dir, spec, profileDir };
   }
 })();
+
+/**
+ * 按安装形态给出「怎么升级」的命令。
+ * 用户要在终端里原样执行，所以必须能直接跑通——不能只说「去下载」。
+ */
+function updateCommandOf(install) {
+  const profile = install.profile || '<profile>';
+  const add = 'dsh plugin --profile ' + profile + ' add ';
+  const spec = text(install.spec);
+  if (!spec) return '';
+  if (/^link:/i.test(spec) || /^file:/i.test(spec) || path.isAbsolute(spec)) {
+    // 目录 / tgz：DSH 复制或链接的是本地路径，重跑同一条命令即可重装
+    const target = spec.replace(/^link:/i, '').replace(/^file:/i, '');
+    if (/\.(tgz|tar\.gz)$/i.test(target)) return add + '"' + target + '"';
+    return '';   // 目录安装靠覆盖文件，没有可复跑的命令
+  }
+  if (/^(git\+)?https?:\/\//i.test(spec)) return add + spec;
+  // npm 版本号或包名
+  return add + 'dsh-cli-workbench@latest';
+}
 
 /* 读最新版本号的几个来源，并行竞速、谁先答对用谁。
    首选 gitcode 的 contents API：国内直连、约 0.5 秒、不受 CDN 缓存影响
@@ -1848,6 +1891,10 @@ class Workbench {
         // 当初怎么装的，决定「怎么更新」这句提示写什么
         install: SELF_INSTALL.kind,
         profile: SELF_INSTALL.profile,
+        // 用户名下这个插件登记成什么依赖：git 地址 / tgz 路径 / npm 版本号
+        spec: SELF_INSTALL.spec,
+        // 可原样执行的升级命令（目录安装没有，返回空串）
+        command: updateCommandOf(SELF_INSTALL),
       checkedAt: now(),
     };
     this.versionCache = { at: now(), value };

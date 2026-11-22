@@ -163,7 +163,10 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('能判断安装形态（目录 / 包）', /const SELF_INSTALL = \(\(\) => \{/.test(srcIndex));
   ok('junction 用 lstat 识别为符号链接', /lstatSync\(dir\)\.isSymbolicLink\(\)/.test(srcIndex));
   ok('/version 返回安装形态', /install: SELF_INSTALL\.kind/.test(srcIndex));
-  ok('包安装与目录安装给不同的更新提示', /selfVersion\.install === 'package'/.test(srcClient));  ok('目录项不被 flex 压缩（目录一多就挤成一团）', /\.cw-diritem\{[^}]*flex: none;/.test(srcClient));
+  ok('能算出升级命令时给出命令框', /selfVersion\.command \?/.test(srcClient) && /cw-upd-cmd/.test(srcClient));
+  ok('目录安装（无命令）才提示覆盖文件', /selfVersion\.install === 'link' \|\| selfVersion\.install === 'directory'/.test(srcClient));
+  ok('Host 按安装形态算升级命令', /function updateCommandOf\(install\)/.test(srcIndex));
+  ok('自己登记的依赖 spec 从 profile 清单读', /deps\['dsh-cli-workbench'\]/.test(srcIndex));  ok('目录项不被 flex 压缩（目录一多就挤成一团）', /\.cw-diritem\{[^}]*flex: none;/.test(srcClient));
   ok('按钮文字不换行（窄容器里会竖排）', /\.cw-btn\{[\s\S]{0,300}white-space: nowrap;/.test(srcClient));
   ok('按钮行放不下时换行而不是压字', /flexWrap: 'wrap', gap: '6px', marginTop: '8px'/.test(srcClient));
   ok('浏览优先弹系统选择器', /workspaceApi\.pickDirectory\(\)/.test(srcClient));
