@@ -148,5 +148,17 @@ console.log('\n[1.0.29] 朋友机器的两个问题：目录选择器 + 打开�
     /'未安装'/.test(srcClient) && /'无法检查更新'/.test(srcClient) && /'查询失败'/.test(srcClient));
   ok('不再把「查不到最新版」写成检测失败', !/'检测失败'/.test(srcClient));
 }
+
+console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 的更新提示）');
+{
+  ok('Host 有 pluginVersion 接口', /async pluginVersion\(force\) \{/.test(srcIndex));
+  ok('版本来源走 jsDelivr 镜像（GitHub 直连在国内常失败）',
+    /fastly\.jsdelivr\.net\/gh\/ykmingk\/dsh-cli-workbench/.test(srcIndex));
+  ok('只在打开设置时查、缓存 1 小时', /60 \* 60 \* 1000/.test(srcIndex));
+  ok('版本比较不能直接比字符串', /function compareVersion\(left, right\)/.test(srcIndex));
+  ok('路由已挂载', /route === '\/version' && method === 'GET'/.test(srcIndex));
+  ok('设置页显示插件自身版本', /cli-workbench[\s\S]{0,200}检查中|'CLI 工作台',\s*\n\s*h\('span', \{ className: 'cw-upd-badge/.test(srcClient) || /selfVersion/.test(srcClient));
+  ok('README 说明更新来源与隐私', /唯一的外部请求/.test(fs.readFileSync(path.join(BASE, 'README.md'), 'utf8')));
+}
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

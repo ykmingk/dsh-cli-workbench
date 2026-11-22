@@ -20,6 +20,24 @@ import { contentToText, toolTarget, toolCategory, toolVerb, diffOf, humanImpact,
 import { now, idOf, text, clipText, oneLine, realCwd, run, killTree, PERMISSION_MODES, SANDBOX_MODES, SANDBOX_BACKENDS, MAX_ITEMS, API, json } from './lib/util.js';
 
 const MCP_SCRIPT = fileURLToPath(new URL('./mcp-permission.mjs', import.meta.url));
+
+/* 插件自身版本：给「检查更新」用。部署后 index.js 就在包根，读同目录 package.json。 */
+const SELF_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '';
+  } catch {
+    return '';
+  }
+})();
+
+/* 读最新版本号的几个来源，按顺序试。
+   没有走 GitHub raw：国内网络经常连不上；jsDelivr 的镜像对国内更稳。 */
+const VERSION_SOURCES = [
+  'https://fastly.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
+  'https://gcore.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
+  'https://cdn.jsdelivr.net/gh/ykmingk/dsh-cli-workbench@main/package.json',
+];
 const PROVIDERS = {
   claude: { label: 'Claude Code', pkg: '@anthropic-ai/claude-code' },
   codex: { label: 'Codex', pkg: '@openai/codex' },
@@ -142,6 +160,30 @@ function langOf(ext) {
 function parseVersion(output) {
   const match = text(output).match(/\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?/);
   return match ? match[0] : '';
+}
+
+/**
+ * 比较两个版本号，返回 1 / 0 / -1。
+ * 按数字段比，不能直接比字符串——那样 1.0.9 会大于 1.0.10。
+ * 预发布后缀（-rc.1 等）视为比同号正式版旧。
+ */
+function compareVersion(left, right) {
+  const split = (value) => {
+    const [core, pre] = text(value).trim().replace(/^v/i, '').split('-', 2);
+    const nums = core.split('.').map((part) => Number(part) || 0);
+    return { nums, pre: pre || '' };
+  };
+  const a = split(left);
+  const b = split(right);
+  const length = Math.max(a.nums.length, b.nums.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a.nums[index] || 0) - (b.nums[index] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  if (a.pre === b.pre) return 0;
+  if (!a.pre) return 1;   // 有后缀的是预发布，比正式版旧
+  if (!b.pre) return -1;
+  return a.pre > b.pre ? 1 : -1;
 }
 
 /**
@@ -436,6 +478,8 @@ class Workbench {
     this.updateCache = { at: 0, value: null };
     // npm 是否存在（缓存）：只影响「查最新版 / 升级」，不影响任何使用功能
     this.npmCache = null;
+    // 插件自身的最新版本号（缓存 1 小时，只在用户打开设置时按需查询）
+    this.versionCache = null;
     this.codexSandboxCache = null;
     this.codexSandboxPromise = null;
     this.compatCache = new Map();
@@ -1224,6 +1268,9 @@ class Workbench {
       const body = await readBody(req);
       return this.cancelPermission(req, res, body);
     }
+    if (route === '/version' && method === 'GET') {
+      return json(res, 200, await this.pluginVersion(url.searchParams.get('force') === '1'));
+    }
     if (route === '/dirs' && method === 'GET') {
         /* 插件自己的目录选择器后端。
            DSH 的 ctx.uiWorkspace.pickDirectory() 在部分装配下根本没有「弹系统选择器」
@@ -1718,6 +1765,52 @@ class Workbench {
     const ok = result.code === 0 && /\d+\.\d+/.test(result.stdout);
     this.npmCache = { at: now(), ok };
     return ok;
+  }
+
+  /**
+   * 插件自身的最新版本号。
+   *
+   * 本地目录安装的插件，DSH 的插件页不会提示更新（它只认 catalog 与 npm）。
+   * 这里自己读一次仓库里的 package.json：命中就告诉用户「有新版本，去下载」。
+   * 只在用户打开设置时按需调用，结果缓存 1 小时——不轮询。
+   */
+  async pluginVersion(force) {
+    if (!force && this.versionCache && now() - this.versionCache.at < 60 * 60 * 1000) {
+      return this.versionCache.value;
+    }
+    let latest = '';
+    let source = '';
+    let error = '';
+    /* 几个镜像并行问，谁先答对就用谁：串行的话最慢那个会把总耗时拖到 8 秒以上
+       （实测 fastly 超时后 gcore 才返回）。Promise.any 拿到第一个成功的即可。 */
+    try {
+      const answers = await Promise.any(VERSION_SOURCES.map(async (url) => {
+        const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const pkg = await response.json();
+        if (!pkg || typeof pkg.version !== 'string' || !/^\d+\.\d+/.test(pkg.version)) {
+          throw new Error('返回内容里没有版本号');
+        }
+        return { latest: pkg.version, source: url };
+      }));
+      latest = answers.latest;
+      source = answers.source;
+    } catch (failure) {
+      // Promise.any 失败时是 AggregateError，逐个来源的原因对排查更有用
+      const reasons = failure && Array.isArray(failure.errors) ? failure.errors : [failure];
+      error = reasons.map((item) => String(item && item.message ? item.message : item)).join('; ');
+    }
+    const value = {
+      current: SELF_VERSION,
+      latest,
+      source,
+      error: latest ? '' : (error || '无法读取最新版本号'),
+      // 只比较数字段，避免 1.0.9 被 1.0.10 判成「更新」这种字符串比较错误
+      hasUpdate: Boolean(latest) && compareVersion(latest, SELF_VERSION) > 0,
+      checkedAt: now(),
+    };
+    this.versionCache = { at: now(), value };
+    return value;
   }
 
   async upgrade(provider) {

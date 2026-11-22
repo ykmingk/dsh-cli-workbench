@@ -1706,6 +1706,8 @@ button.cw-pill[aria-expanded="true"]{
   background: var(--cw-accent); color: var(--cw-on-accent); font-size: var(--cw-fs-sm); font-weight: var(--cw-fw-medium); white-space: nowrap;
 }
 .cw-upd-btn:hover{ background: var(--cw-accent-hover); }
+/* 「去下载」是链接不是按钮：去掉下划线，保持同样的按钮外观 */
+a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 
 /* 设置：footer 只留一个「完成」 */
 .cw-set-foot{ display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: .5px solid var(--cw-border); background: var(--cw-sub); }
@@ -2970,6 +2972,21 @@ button.cw-pill[aria-expanded="true"]{
       const [claudeMode, setClaudeMode] = useState((defaultSettings && defaultSettings.claudeMode) || 'manual');
       const [codexMode, setCodexMode] = useState((defaultSettings && defaultSettings.codexMode) || 'workspace-write');
       const [sandboxBackend, setSandboxBackend] = useState((defaultSettings && defaultSettings.codexSandboxBackend) || 'auto');
+      /* 插件自身的版本号：本地目录安装时 DSH 不会提示更新，这里自己查一次。
+         只在打开设置时查；Host 侧缓存 1 小时，不做轮询。 */
+      const [selfVersion, setSelfVersion] = useState(null);
+      const [selfBusy, setSelfBusy] = useState(false);
+      const checkSelf = useCallback(async (force) => {
+        setSelfBusy(true);
+        try {
+          setSelfVersion(await api('/version' + (force ? '?force=1' : '')));
+        } catch (error) {
+          setSelfVersion({ current: '', latest: '', hasUpdate: false, error: error.message });
+        } finally {
+          setSelfBusy(false);
+        }
+      }, []);
+      useEffect(() => { checkSelf(false); }, [checkSelf]);
       const sandboxState = boot && boot.providers && boot.providers.codex ? boot.providers.codex.sandbox : null;
       // 归档时间：老数据没有 archivedAt，用 updatedAt 兜底；排序也按它，别让「今天
       // 刚归档」的会话因为半个月没动过而被分到「更早」。
@@ -3071,6 +3088,37 @@ button.cw-pill[aria-expanded="true"]{
                 h(Icon, { name: 'refresh', size: 14 }),
                 'CLI 版本与升级',
                 h('button', { className: 'cw-chip sm', style: { marginLeft: 'auto' }, onClick: onRefreshUpdates }, '重新检测'),
+              ),
+              /* 插件自己：本地目录安装时 DSH 插件页不会给更新提示，这里如实显示。 */
+              h('div', { className: 'cw-upd' },
+                h('span', { className: 'cw-upd-logo' }, h(Icon, { name: 'grid', size: 17 })),
+                h('div', { className: 'cw-upd-meta' },
+                  h('div', { className: 'cw-upd-name' }, 'CLI 工作台',
+                    h('span', { className: 'cw-upd-badge' + (selfVersion && selfVersion.hasUpdate ? '' : ' latest') },
+                      !selfVersion ? '检查中…'
+                        : selfVersion.hasUpdate ? '有新版本'
+                          : selfVersion.latest ? '已是最新' : '无法检查')),
+                  h('div', { className: 'cw-upd-ver' },
+                    h('span', null, '当前 v' + ((selfVersion && selfVersion.current) || '?')),
+                    selfVersion && selfVersion.hasUpdate ? h('span', null, '→ v' + selfVersion.latest) : null,
+                    selfVersion && !selfVersion.latest && selfVersion.error
+                      ? h('span', { title: selfVersion.error }, '读不到最新版本号')
+                      : null,
+                  ),
+                  h('div', { className: 'cw-upd-compat' },
+                    selfVersion && selfVersion.hasUpdate
+                      ? '去仓库下载新版压缩包，解压后在插件页重新选择这个目录即可覆盖安装。'
+                      : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
+                ),
+                selfVersion && selfVersion.hasUpdate
+                  ? h('a', {
+                    className: 'cw-upd-btn',
+                    href: 'https://github.com/ykmingk/dsh-cli-workbench/releases',
+                    target: '_blank',
+                    rel: 'noreferrer',
+                  }, '去下载')
+                  : h('button', { className: 'cw-upd-btn', disabled: selfBusy, onClick: () => checkSelf(true) },
+                    selfBusy ? '检查中…' : '重新检查'),
               ),
               entries
                 ? PROVIDERS.map((provider) => {
