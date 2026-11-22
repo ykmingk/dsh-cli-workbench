@@ -3107,7 +3107,18 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   ),
                   h('div', { className: 'cw-upd-compat' },
                     selfVersion && selfVersion.hasUpdate
-                      ? '下载新版压缩包，解压覆盖到当前插件目录后刷新页面即可（用 .tgz 安装的，请在插件页重新选择新包）。'
+                      ? (() => {
+                        /* 更新手法取决于当初怎么装的——说错了用户会白折腾：
+                           目录安装要覆盖文件，包安装（tgz / 仓库地址）覆盖没用。 */
+                        const profile = selfVersion.profile ? '--profile ' + selfVersion.profile : '--profile <profile>';
+                        if (selfVersion.install === 'package') {
+                          return '重跑当初的安装命令：dsh plugin ' + profile + ' add <新包或新地址>，或在插件页重新选择新包。';
+                        }
+                        if (selfVersion.install === 'link' || selfVersion.install === 'directory') {
+                          return '下载新版压缩包，解压覆盖到这个插件目录，然后刷新页面即可。';
+                        }
+                        return '下载新版压缩包覆盖插件目录，或在插件页重新选择新包。';
+                      })()
                       : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
                 ),
                 selfVersion && selfVersion.hasUpdate

@@ -31,6 +31,35 @@ const SELF_VERSION = (() => {
   }
 })();
 
+/**
+ * 这个插件是怎么装进来的——决定「有新版本」时该告诉用户怎么更新。
+ *
+ * - link：目录安装。DSH 把工作区目录链接进 profile，覆盖文件即生效。
+ * - package：tgz 包或仓库地址安装。DSH 把内容复制进 profile 的 node_modules，
+ *   改文件没用，必须重跑 `dsh plugin add`。
+ * - directory / unknown：认不出来，就说通用的办法。
+ *
+ * Windows 的 junction 在 Node 里同样表现为符号链接，所以交给 lstat 判断即可。
+ */
+const SELF_INSTALL = (() => {
+  let dir = '';
+  try {
+    dir = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]+$/, '');
+  } catch {
+    return { kind: 'unknown', profile: '', dir: '' };
+  }
+  // profile 名：...\.dsh\profiles\<name>\node_modules\...
+  const match = dir.match(/[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/]/i);
+  const profile = match ? match[1] : '';
+  try {
+    if (lstatSync(dir).isSymbolicLink()) return { kind: 'link', profile, dir };
+    if (/[\\/]node_modules[\\/][^\\/]+$/.test(dir)) return { kind: 'package', profile, dir };
+    return { kind: 'directory', profile, dir };
+  } catch {
+    return { kind: 'unknown', profile, dir };
+  }
+})();
+
 /* 读最新版本号的几个来源，并行竞速、谁先答对用谁。
    首选 gitcode 的 contents API：国内直连、约 0.5 秒、不受 CDN 缓存影响
    （jsDelivr 对 @main 有十几小时缓存，刚发布的新版本读不到）。
@@ -1816,6 +1845,9 @@ class Workbench {
       error: latest ? '' : (error || '无法读取最新版本号'),
       // 只比较数字段，避免 1.0.9 被 1.0.10 判成「更新」这种字符串比较错误
       hasUpdate: Boolean(latest) && compareVersion(latest, SELF_VERSION) > 0,
+        // 当初怎么装的，决定「怎么更新」这句提示写什么
+        install: SELF_INSTALL.kind,
+        profile: SELF_INSTALL.profile,
       checkedAt: now(),
     };
     this.versionCache = { at: now(), value };
