@@ -53,14 +53,35 @@ dsh plugin --profile web add github:ykmingk/dsh-cli-workbench
 
 ### 用仓库地址安装（需要先装 Git）
 
-如果是在 **添加插件** 里直接粘贴仓库地址（`https://…/dsh-cli-workbench.git`），DSH 会把地址交给
-pnpm 去 **clone**，这要求本机装有 **Git** 并能在命令行里运行 `git --version`：
+在 **添加插件** 里粘贴仓库地址，或者用命令行：
+
+```sh
+dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-workbench.git
+```
+
+**用 gitcode 这个地址，别用 GitHub。** 实测（国内网络）：
+
+| 仓库 | 安装耗时 | 说明 |
+|---|---|---|
+| gitcode | 约 1.6 秒 | 稳定，`git ls-remote` 探测 1.2 秒通过 |
+| GitHub | 1 分 39 秒 | 一路 ECONNRESET / ETIMEDOUT 重试，很多网络下直接连不上 |
+
+这条路径要求本机装有 **Git** 并能运行 `git --version`：
 
 - DSH 安装前会先跑一次 `git ls-remote` 探测仓库可读性；没有 Git 时这一步就失败。
-- 自建 Git 服务（例如 gitcode）不在 pnpm 的内置托管商列表里，HTTPS 读不到时 DSH 会改试 SSH，
-  那还需要配好 SSH 密钥。
+- gitcode 不在 pnpm 的内置托管商列表里，所以 DSH 会先用 HTTPS 探测；探测不通才会改试 SSH
+  （那时还需要配好 SSH 密钥）。gitcode 的 HTTPS 是通的，不会走到 SSH。
 
-所以没装 Git 的机器请用上面的 **下载 ZIP + 选本地目录**，效果完全一样。
+**后续更新**：重跑同一条命令即可，实测把 1.0.30 升到 1.0.33 只用了 1 秒：
+
+```sh
+dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-workbench.git
+```
+
+注意：这样装出来的包不会被固定到某个 commit，所以 DSH 插件页不会出现「更新」按钮；
+想主动知道有没有新版，打开工作台的 **设置 → CLI 版本与升级**。
+
+没装 Git 的机器请用上面的 **下载 ZIP + 选本地目录**，效果完全一样。
 另外也可以用 `.tgz` 包安装（`npm pack` 生成的压缩包，同样是本地路径，不经过 Git）。
 
 ### 运行要求
