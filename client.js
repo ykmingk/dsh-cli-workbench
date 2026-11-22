@@ -2986,6 +2986,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       /* 插件自身的版本号：本地目录安装时 DSH 不会提示更新，这里自己查一次。
          只在打开设置时查；Host 侧缓存 1 小时，不做轮询。 */
       const [selfVersion, setSelfVersion] = useState(null);
+      /* 自动升级的进行状态：null / {phase:'running'} / {phase:'done', ok, error} */
+      const [selfUpgrade, setSelfUpgrade] = useState(null);
       const [selfBusy, setSelfBusy] = useState(false);
       const checkSelf = useCallback(async (force) => {
         setSelfBusy(true);
@@ -3117,22 +3119,27 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                       : null,
                   ),
                   h('div', { className: 'cw-upd-compat' },
-                    selfVersion && selfVersion.hasUpdate
-                      ? (() => {
-                        /* 更新手法取决于当初怎么装的——说错了用户会白折腾：
-                           目录安装要覆盖文件；仓库地址 / tgz 覆盖没用，得重跑安装命令。 */
-                        if (selfVersion.command) {
-                          return '在终端里执行下面这条命令即可升级（不用重新下载解压）。';
-                        }
-                        if (selfVersion.install === 'link' || selfVersion.install === 'directory') {
-                          return '下载新版压缩包，解压覆盖到这个插件目录，然后刷新页面即可。';
-                        }
-                        return '下载新版压缩包覆盖插件目录，或在插件页重新选择新包。';
-                      })()
-                      : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
-                  /* 能算出可复跑的命令就直接秀出来：gitcode 安装实测 1 秒装完，
-                     比「打开网页下载压缩包再解压覆盖」省事得多。 */
-                  selfVersion && selfVersion.hasUpdate && selfVersion.command
+                    selfUpgrade && selfUpgrade.phase === 'done'
+                      ? (selfUpgrade.ok
+                        ? '已升级到 v' + (selfVersion && selfVersion.latest ? selfVersion.latest : '') + '。请重启 DSH 让新版本生效。'
+                        : '升级失败：' + selfUpgrade.error)
+                      : selfUpgrade && selfUpgrade.phase === 'running'
+                        ? '正在下载并安装，请稍候（通常几秒）…'
+                        : selfVersion && selfVersion.hasUpdate
+                          ? (() => {
+                            /* 更新手法取决于当初怎么装的——说错了用户会白折腾：
+                               包安装（仓库地址 / tgz）能自动替换；目录安装只能覆盖文件。 */
+                            if (selfVersion.install === 'package') {
+                              return '这个安装方式支持直接升级，点右边的按钮即可。';
+                            }
+                            if (selfVersion.command) {
+                              return '当前是目录安装，无法自动替换。可在终端执行下面这条命令升级。';
+                            }
+                            return '下载新版压缩包，解压覆盖到这个插件目录，然后刷新页面即可。';
+                          })()
+                          : '版本号来自项目仓库的 package.json，只在打开这个页面时查询一次。'),
+                  /* 目录安装没有可复跑的命令，才把这行命令亮出来让人手动执行 */
+                  selfVersion && selfVersion.hasUpdate && selfVersion.command && selfVersion.install !== 'package'
                     ? h('div', { className: 'cw-upd-cmd' },
                       h('code', null, selfVersion.command),
                       h('button', {
@@ -3143,13 +3150,28 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     : null,
                 ),
                 selfVersion && selfVersion.hasUpdate
-                  ? h('a', {
-                    className: 'cw-upd-btn',
-                    /* 没有可复跑命令时（目录安装）才给下载入口；指向国内可访问的 gitcode */
-                    href: 'https://gitcode.com/yk1900/dsh-cli-workbench/releases',
-                    target: '_blank',
-                    rel: 'noreferrer',
-                  }, selfVersion.command ? '下载安装包' : '去下载')
+                  ? (selfVersion.install === 'package'
+                    ? h('button', {
+                      className: 'cw-upd-btn',
+                      disabled: selfUpgrade && selfUpgrade.phase === 'running',
+                      onClick: async () => {
+                        setSelfUpgrade({ phase: 'running' });
+                        try {
+                          const result = await api('/self-upgrade', { method: 'POST' });
+                          setSelfUpgrade({ phase: 'done', ok: Boolean(result.ok), error: result.error || result.output || '' });
+                          if (result.ok) await checkSelf(true);
+                        } catch (error) {
+                          setSelfUpgrade({ phase: 'done', ok: false, error: error.message });
+                        }
+                      },
+                    }, selfUpgrade && selfUpgrade.phase === 'running' ? '升级中…' : '立即升级')
+                    : h('a', {
+                      className: 'cw-upd-btn',
+                      /* 目录安装没法自动替换，只能给下载入口；指向国内可访问的 gitcode */
+                      href: 'https://gitcode.com/yk1900/dsh-cli-workbench/releases',
+                      target: '_blank',
+                      rel: 'noreferrer',
+                    }, '去下载'))
                   : h('button', { className: 'cw-upd-btn', disabled: selfBusy, onClick: () => checkSelf(true) },
                     selfBusy ? '检查中…' : '重新检查'),
               ),

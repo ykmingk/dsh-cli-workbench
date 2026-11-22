@@ -163,9 +163,14 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('能判断安装形态（目录 / 包）', /const SELF_INSTALL = \(\(\) => \{/.test(srcIndex));
   ok('junction 用 lstat 识别为符号链接', /lstatSync\(dir\)\.isSymbolicLink\(\)/.test(srcIndex));
   ok('/version 返回安装形态', /install: SELF_INSTALL\.kind/.test(srcIndex));
-  ok('能算出升级命令时给出命令框', /selfVersion\.command \?/.test(srcClient) && /cw-upd-cmd/.test(srcClient));
-  ok('目录安装（无命令）才提示覆盖文件', /selfVersion\.install === 'link' \|\| selfVersion\.install === 'directory'/.test(srcClient));
-  ok('Host 按安装形态算升级命令', /function updateCommandOf\(install\)/.test(srcIndex));
+  ok('目录安装才显示命令框（包安装直接点按钮）', /selfVersion\.command && selfVersion\.install !== 'package'/.test(srcClient) && /cw-upd-cmd/.test(srcClient));
+  ok('包安装提示可自动升级', /selfVersion\.install === 'package'[\s\S]{0,120}这个安装方式支持直接升级/.test(srcClient));
+    ok('Host 提供一键升级接口', /async selfUpgrade\(\) \{/.test(srcIndex) && /route === '\/self-upgrade'/.test(srcIndex));
+  ok('只对包安装开放自动升级', /SELF_INSTALL\.kind !== 'package'/.test(srcIndex));
+  ok('钉了 commit 的地址升级时去掉 commit', /replace\(\/#\.\*\$\/, ''\)/.test(srcIndex));
+  ok('升级有超时保护', /升级超时/.test(srcIndex));
+  ok('前端点按钮直接调升级接口', /api\('\/self-upgrade'/.test(srcClient));
+  ok('升级后提示重启', /请重启 DSH 让新版本生效/.test(srcClient));ok('Host 按安装形态算升级命令', /function updateCommandOf\(install\)/.test(srcIndex));
   ok('自己登记的依赖 spec 从 profile 清单读', /deps\['dsh-cli-workbench'\]/.test(srcIndex));  ok('目录项不被 flex 压缩（目录一多就挤成一团）', /\.cw-diritem\{[^}]*flex: none;/.test(srcClient));
   ok('按钮文字不换行（窄容器里会竖排）', /\.cw-btn\{[\s\S]{0,300}white-space: nowrap;/.test(srcClient));
   ok('按钮行放不下时换行而不是压字', /flexWrap: 'wrap', gap: '6px', marginTop: '8px'/.test(srcClient));

@@ -98,7 +98,9 @@ function updateCommandOf(install) {
     if (/\.(tgz|tar\.gz)$/i.test(target)) return add + '"' + target + '"';
     return '';   // 目录安装靠覆盖文件，没有可复跑的命令
   }
-  if (/^(git\+)?https?:\/\//i.test(spec)) return add + spec;
+  /* 钉了 commit 的地址要去掉 #commit：重跑它只会装回那个旧提交，
+     不是「升级」。去掉后 pnpm 拉仓库最新 HEAD。 */
+  if (/^(git\+)?https?:\/\//i.test(spec)) return add + spec.replace(/#.*$/, '');
   // npm 版本号或包名
   return add + 'dsh-cli-workbench@latest';
 }
@@ -554,6 +556,8 @@ class Workbench {
     this.npmCache = null;
     // 插件自身的最新版本号（缓存 1 小时，只在用户打开设置时按需查询）
     this.versionCache = null;
+    // 自动升级的互斥锁：同时只允许一个在跑
+    this.selfUpgrading = false;
     this.codexSandboxCache = null;
     this.codexSandboxPromise = null;
     this.compatCache = new Map();
@@ -1342,6 +1346,9 @@ class Workbench {
       const body = await readBody(req);
       return this.cancelPermission(req, res, body);
     }
+    if (route === '/self-upgrade' && method === 'POST') {
+      return json(res, 200, await this.selfUpgrade());
+    }
     if (route === '/version' && method === 'GET') {
       return json(res, 200, await this.pluginVersion(url.searchParams.get('force') === '1'));
     }
@@ -1899,6 +1906,62 @@ class Workbench {
     };
     this.versionCache = { at: now(), value };
     return value;
+  }
+
+  /**
+   * 自动升级自己。
+   *
+   * 只对「包安装」开放：DSH 把包复制进 profile/node_modules，pnpm 替换的是普通目录，
+   * 实测 DSH 运行中也能成功（1.2~2.3 秒）。而目录安装（link）在 node_modules 里是
+   * 联接点，被本进程占用，替换必报 EPERM——那种情况只能覆盖文件，不在这里处理。
+   *
+   * 升级完磁盘上是新版本，但当前进程加载的还是旧代码，所以要提示重启 DSH。
+   */
+  async selfUpgrade() {
+    if (this.selfUpgrading) return { ok: false, error: '升级已在进行中' };
+    if (SELF_INSTALL.kind !== 'package') {
+      return {
+        ok: false,
+        reason: 'not-package',
+        error: SELF_INSTALL.kind === 'link' || SELF_INSTALL.kind === 'directory'
+          ? '当前是目录安装：下载新版覆盖插件目录即可，无法自动替换'
+          : '认不出这个插件的安装来源，请用命令行升级',
+      };
+    }
+    /* 钉了 commit 的安装要去掉 #commit，否则重跑还是装回旧版本 */
+    const spec = text(SELF_INSTALL.spec).replace(/#.*$/, '');
+    const profile = text(SELF_INSTALL.profile);
+    if (!spec) return { ok: false, reason: 'no-spec', error: '读不到安装来源，请用命令行升级' };
+    if (!profile) return { ok: false, reason: 'no-profile', error: '认不出 profile 名，请用命令行升级' };
+
+    const command = 'dsh plugin --profile ' + profile + ' add ' + (/\.(tgz|tar\.gz)$/i.test(spec) ? '"' + spec + '"' : spec);
+    this.selfUpgrading = true;
+    try {
+      /* run() 没有超时，包慢时会把 HTTP 请求一起挂住；这里自己加一层。
+         给 3 分钟：gitcode 实测 2 秒，但网络差时要留够。 */
+      const timeout = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ code: -2, stdout: '', stderr: '升级超时（3 分钟）' }), 180000);
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+      const result = await Promise.race([run(command), timeout]);
+      const ok = result.code === 0;
+      if (ok) {
+        // 版本可能变了，缓存全部作废，下次查会重新读
+        this.versionCache = null;
+        this.statusCache = { at: 0, value: null };
+      }
+      return {
+        ok,
+        command,
+        // 装好之后磁盘上是新版，但运行中的进程还是旧代码
+        needRestart: ok,
+        output: ok
+          ? oneLine(result.stdout, 300)
+          : oneLine(result.stderr || result.stdout, 400),
+      };
+    } finally {
+      this.selfUpgrading = false;
+    }
   }
 
   async upgrade(provider) {
