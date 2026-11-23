@@ -541,7 +541,15 @@ window.__ModuleLoader__.load({
 }
 .cw-rail-head{ padding: 12px 12px 8px; }
 .cw-rail-title-row{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.cw-rail-title{ font-size: var(--cw-fs-base); font-weight: var(--cw-fw-bold); line-height: var(--cw-lh-base); }
+.cw-rail-title{ font-size: var(--cw-fs-base); font-weight: var(--cw-fw-bold); line-height: var(--cw-lh-base); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 标题右侧唯一的动作：带字的小按钮，别做成一枚猜不出用途的图标 */
+.cw-rail-add{
+  flex: none; height: 24px; padding: 0 7px 0 5px; display: inline-flex; align-items: center; gap: 4px;
+  border: 0; border-radius: var(--cw-radius-sm); background: transparent; color: var(--cw-subtle);
+  font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); white-space: nowrap;
+}
+.cw-rail-add:hover{ background: var(--cw-hover); color: var(--cw-text); }
+.cw-rail-add .cw-ic{ width: 12px; height: 12px; }
 .cw-search{
   height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 9px;
   border: .5px solid var(--cw-border-4); border-radius: var(--cw-radius-sm); background: var(--cw-bg);
@@ -784,6 +792,16 @@ window.__ModuleLoader__.load({
   font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-subtle);
 }
 .cw-msg-user .cw-msg-label{ justify-content: flex-end; }
+/* 已发出消息的「复制 / 修改」：平时藏着，悬停这条消息（或键盘聚焦）才出现。
+   放在时间戳左边而不是气泡里，正文选中复制时不会误点。 */
+.cw-msg-acts{ display: inline-flex; align-items: center; gap: 2px; margin-right: 2px; opacity: 0; transition: opacity .12s; }
+.cw-msg:hover .cw-msg-acts, .cw-msg-acts:focus-within{ opacity: 1; }
+.cw-msg-acts button{
+  width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--cw-subtle);
+}
+.cw-msg-acts button:hover{ background: var(--cw-hover); color: var(--cw-text); }
+.cw-msg-acts .cw-ic{ width: 12px; height: 12px; }
 .cw-bubble-user{
   display: inline-block; text-align: left;
   padding: 10px 16px;
@@ -1556,14 +1574,6 @@ button.cw-pill[aria-expanded="true"]{
 .cw-confirm-body{ padding: 18px 18px 4px; }
 .cw-confirm-title{ font-size: var(--cw-fs-base); font-weight: var(--cw-fw-bold); line-height: var(--cw-lh-base); color: var(--cw-text); }
 .cw-confirm-text{ margin-top: 6px; font-size: var(--cw-fs-sm); line-height: var(--cw-lh-sm); color: var(--cw-muted); }
-.cw-confirm-list{
-  margin-top: 10px; max-height: 132px; overflow: hidden;
-  border-radius: var(--cw-radius-sm); background: var(--cw-sub);
-}
-.cw-confirm-item{ display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-text); }
-.cw-confirm-item .cw-ic{ color: var(--cw-subtle); }
-.cw-confirm-item span{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cw-confirm-more{ padding: 4px 10px 7px; font-size: var(--cw-fs-micro); color: var(--cw-subtle); }
 .cw-confirm-error{ margin-top: 10px; padding: 8px 10px; border-radius: var(--cw-radius-sm); background: var(--cw-danger-bg); color: var(--cw-danger); font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); }
 .cw-confirm-actions{ display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 14px 18px 16px; }
 .cw-confirm-btn{
@@ -3160,13 +3170,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             ) : null,
             h('div', { className: 'cw-upd-sec' },
               h('div', { className: 'cw-set-title' },
-                h(Icon, { name: 'sparkles', size: 14 }),
-                '技能与计划模式',
-              ),
-              h('div', { className: 'cw-set-note' }, '打开计划后，下一条消息只出方案、不改文件。'),
-            ),
-            h('div', { className: 'cw-upd-sec' },
-              h('div', { className: 'cw-set-title' },
                 h(Icon, { name: 'refresh', size: 14 }),
                 'CLI 版本与升级',
                 h('button', { className: 'cw-chip sm', style: { marginLeft: 'auto' }, onClick: onRefreshUpdates }, '重新检测'),
@@ -3334,10 +3337,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
      * 和工作台圆角 / 发丝线 / 主按钮完全割裂，所以删除这类不可撤销的操作都走这里：
      * 遮罩 + 320px 对话框，行悬停用灰底，主按钮是 DSH 的发送色，危险操作染红。
      */
-    function ConfirmDialog({ title, body, names, okLabel, cancelLabel = '取消', danger, busy, error, onCancel, onConfirm }) {
+    function ConfirmDialog({ title, body, okLabel, cancelLabel = '取消', danger, busy, error, onCancel, onConfirm }) {
       const dialogRef = useRef(null);
       useTrap(dialogRef);
-      const shown = (names || []).slice(0, 4);
       return h('div', {
         className: 'cw-mask',
         onClick: (event) => { if (event.target === event.currentTarget && !busy) onCancel(); },
@@ -3352,10 +3354,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       h('div', { className: 'cw-confirm-body' },
         h('div', { className: 'cw-confirm-title' }, title),
         body ? h('div', { className: 'cw-confirm-text' }, body) : null,
-        names && names.length ? h('div', { className: 'cw-confirm-list' },
-          shown.map((name, index) => h('div', { key: index, className: 'cw-confirm-item' }, h(Icon, { name: 'file', size: 12 }), h('span', null, name))),
-          (names || []).length > shown.length ? h('div', { className: 'cw-confirm-more' }, '还有 ' + (names.length - shown.length) + ' 个…') : null,
-        ) : null,
         error ? h('div', { className: 'cw-confirm-error' }, error) : null,
       ),
       h('div', { className: 'cw-confirm-actions' },
@@ -3726,9 +3724,15 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       return h('aside', { className: 'cw-rail' + (batch ? ' batch' : ''), 'data-provider': provider },
         h('div', { className: 'cw-rail-head' },
           h('div', { className: 'cw-rail-title-row' },
-            h('span', { className: 'cw-rail-title' }, meta.label + ' 会话'),
-            h('button', { className: 'cw-iconbtn', title: '把目录添加为工作区', 'aria-label': '把目录添加为工作区', onClick: onAddWorkspace }, h(Icon, { name: 'folder', size: 15 })),
-            h('button', { className: 'cw-iconbtn', title: '搜索', onClick: () => { const input = document.querySelector('.cw-search input'); if (input) input.focus(); } }, h(Icon, { name: 'search', size: 15 })),
+            h('span', { className: 'cw-rail-title' }, (provider === 'codex' ? 'Codex' : 'Claude') + ' 会话'),
+            /* 只有一个入口，就别让它当一枚无字图标：加文字说清是「添加工作区」。
+               搜索框一直露在外面，原来那枚「聚焦搜索」图标是纯重复，已去掉。 */
+            h('button', {
+              className: 'cw-rail-add',
+              title: '把目录添加为工作区（在里面建过会话的目录会自动出现）',
+              'aria-label': '把目录添加为工作区',
+              onClick: onAddWorkspace,
+            }, h(Icon, { name: 'folder', size: 12 }), '添加工作区'),
           ),
           h('label', { className: 'cw-search' },
             h(Icon, { name: 'search', size: 14 }),
@@ -4871,11 +4875,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const askDeleteSessions = (list) => {
         const ids = list.map((item) => item.id);
         if (!ids.length) return;
+        /* 只报数量，不列标题：批量删十几条时列表既列不全（下面还要写「还有 N 个」），
+           又会把确认框撑得老高，真正要看的「删几条」反而被埋了。 */
         setConfirmBox({
           kind: 'delete',
           ids,
           title: ids.length > 1 ? '删除 ' + ids.length + ' 个会话' : '删除会话',
-          names: list.map((item) => item.title),
           busy: false,
           error: '',
         });
@@ -4910,13 +4915,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         setBatch(false);
         if (failed.length) {
           // 确认框只留失败的那些，重试是幂等的（Host 对不存在的 id 返回 404，
-          // 计入失败但不阻塞其它条目）。名字与标题跟着剩余数量更新，
-          // 否则重试框还写着「删除 5 个会话」，列表里却只剩 1 个。
-          const remaining = sessions.filter((item) => failed.some((entry) => entry.id === item.id));
+          // 计入失败但不阻塞其它条目）。标题跟着剩余数量更新，否则重试框还写着
+          // 「删除 5 个会话」，实际只剩 1 条要重试。
           setConfirmBox({
             ...confirmBox,
             ids: failed.map((entry) => entry.id),
-            names: remaining.map((item) => item.title),
             title: failed.length > 1 ? '删除 ' + failed.length + ' 个会话（重试）' : '删除会话（重试）',
             busy: false,
             error: '有 ' + failed.length + ' 个删除失败：' + failed[0].message,
@@ -5382,6 +5385,24 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       /* 任务清单：CLI 自己输出的 todo（TodoWrite / markdown 清单）才算数，读不到就不画 */
       const dockTodos = viewSession ? todosOf(items) : null;
 
+      /**
+       * 修改已发出的消息：CLI 的转录只追加、不能改写，所以「修改」不是真的改历史——
+       * 把文字放回输入框、光标落到末尾，改完发出去的是新的一条（原消息保留）。
+       * 附件不跟着重发：旧的已经喂给过 CLI 了，重发一份只会让它读两遍。
+       */
+      const editUserMessage = (item) => {
+        const text = String((item && item.text) || '');
+        if (!text) { showToast('这条消息只有附件，没有可修改的文字'); return; }
+        setDraft(text);
+        setTimeout(() => {
+          const area = textareaRef.current;
+          if (!area) return;
+          area.focus();
+          try { area.setSelectionRange(text.length, text.length); } catch (error) { /* 只读态忽略 */ }
+        }, 0);
+        showToast('已放回输入框，改完发送是新消息');
+      };
+
       const renderItems = () => {
         if (!viewSession) return h(EmptyState, { provider: currentProvider, onPick: (text) => startNew(currentProvider, undefined, text) });
         if (!items.length) return h(EmptyState, { provider: viewSession.provider, onPick: (text) => send(text) });
@@ -5395,7 +5416,19 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             const atts = Array.isArray(item.attachments) ? item.attachments : [];
             const attSession = viewSession ? viewSession.id : '';
             nodes.push(h('div', { key: item.id || index, className: 'cw-msg cw-msg-user', 'data-msg': item.id || '' },
-              h('div', { className: 'cw-msg-label' }, '你 · ' + (timeAgo(item.at) || '刚刚')),
+              h('div', { className: 'cw-msg-label' },
+                item.text ? h('span', { className: 'cw-msg-acts' },
+                  h('button', {
+                    type: 'button', title: '复制这条消息', 'aria-label': '复制这条消息',
+                    onClick: () => copyText(item.text, '已复制这条消息'),
+                  }, h(Icon, { name: 'copy', size: 12 })),
+                  h('button', {
+                    type: 'button', title: '修改这条消息（放回输入框重发）', 'aria-label': '修改这条消息',
+                    onClick: () => editUserMessage(item),
+                  }, h(Icon, { name: 'edit', size: 12 })),
+                ) : null,
+                h('span', null, '你 · ' + (timeAgo(item.at) || '刚刚')),
+              ),
               atts.length ? h('div', { className: 'cw-msg-atts' }, atts.map((att, attIndex) => (
                 att.kind === 'image' && att.file
                   ? h('img', {
@@ -5418,7 +5451,15 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           }
           if (item.kind === 'assistant') {
             nodes.push(h('div', { key: item.id || index, className: 'cw-msg' },
-              h('div', { className: 'cw-msg-label' }, viewSession.provider === 'codex' ? 'Codex' : 'Claude Code'),
+              h('div', { className: 'cw-msg-label' },
+                h('span', null, viewSession.provider === 'codex' ? 'Codex' : 'Claude Code'),
+                item.text ? h('span', { className: 'cw-msg-acts' },
+                  h('button', {
+                    type: 'button', title: '复制这条回复', 'aria-label': '复制这条回复',
+                    onClick: () => copyText(item.text, '已复制这条回复'),
+                  }, h(Icon, { name: 'copy', size: 12 })),
+                ) : null,
+              ),
               h(Markdown, { text: item.text || '' }),
               item.streaming ? h('span', { className: 'cw-cursor' }) : null,
             ));
@@ -5975,7 +6016,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           body: confirmBox.ids.length > 1
             ? '这些会话的转录与改动记录会一起删除，操作不可撤销。'
             : '这个会话的转录与改动记录会一起删除，操作不可撤销。',
-          names: confirmBox.names,
           okLabel: confirmBox.ids.length > 1 ? '删除 ' + confirmBox.ids.length + ' 个' : '删除',
           danger: true,
           busy: confirmBox.busy,

@@ -102,7 +102,9 @@ console.log('\n[新增能力] 工作区可添加 / 可撤销 / 有排查日志')
   ok('DELETE 回传被删的那条（供撤销）', srcIndex.includes('removed: { cwd: result.entry.cwd, title: result.entry.title }'));
   ok('ensureWorkspace 支持恢复原显示名', srcIndex.includes('ensureWorkspace(dir, titleOverride, provider)'));
   ok('客户端有撤销入口', srcClient.includes("label: '撤销'") && srcClient.includes('restoreWorkspace(removed.cwd, removed.title, removed.provider)'));
-  ok('左栏有「把目录添加为工作区」按钮', srcClient.includes("title: '把目录添加为工作区'"));
+  ok('左栏有「添加工作区」按钮（带文字，不再是无字图标）',
+    srcClient.includes("'aria-label': '把目录添加为工作区'")
+    && srcClient.includes("h(Icon, { name: 'folder', size: 12 }), '添加工作区'"));
   ok('操作日志不通过接口暴露',
     srcIndex.includes("logOperation('workspace.add'")
     && !srcIndex.includes("'/log'")
