@@ -4617,28 +4617,102 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         reader.readAsDataURL(file);
       });
 
-      /** 添加附件：图片有数量/大小上限，其它文件只限单个大小（Host 还会再核一遍）。 */
-      const addFiles = async (fileList) => {
+      /**
+       * 桌面端才拿得到真实绝对路径：DSH 的 preload 暴露了
+       * `window.__DSH_HOST_PATHS__.pathFor(file)`（Electron 的
+       * webUtils.getPathForFile）。浏览器里没有它，返回空串——
+       * 文件夹在浏览器里添不了，跟 DSH 自己的限制一致。
+       */
+      const hostPathFor = (file) => {
+        try {
+          const bridge = window.__DSH_HOST_PATHS__;
+          if (!bridge || typeof bridge.pathFor !== 'function') return '';
+          return String(bridge.pathFor(file) || '');
+        } catch { return ''; }
+      };
+
+      /**
+       * 从一次拖放/粘贴里取出文件和「哪些是文件夹」。
+       * 浏览器只在 DataTransferItem 上暴露 entry API，`files` 里认不出来。
+       */
+      const transferFiles = (dataTransfer) => {
+        const files = [];
+        const directories = new Set();
+        if (!dataTransfer) return { files, directories };
+        if (dataTransfer.items) {
+          for (const item of dataTransfer.items) {
+            if (item.kind !== 'file') continue;
+            const file = item.getAsFile();
+            if (!file) continue;
+            files.push(file);
+            try {
+              if (typeof item.webkitGetAsEntry === 'function' && item.webkitGetAsEntry()?.isDirectory === true) {
+                directories.add(file);
+              }
+            } catch { /* entry API 不可用就当普通文件 */ }
+          }
+        }
+        if (!files.length && dataTransfer.files) {
+          for (const file of dataTransfer.files) files.push(file);
+        }
+        return { files, directories };
+      };
+
+      /**
+       * 添加附件：图片上传字节（要内联给 Claude）；桌面端拖进来的普通文件与
+       * 文件夹**只带绝对路径**，不复制内容——大文件不用等上传，CLI 自己读。
+       * 浏览器里粘贴/选择（拿不到路径）的普通文件才退回上传。
+       */
+      const addFiles = async (fileList, directories) => {
         const files = Array.from(fileList || []).filter(Boolean);
         if (!files.length) return;
         const accepted = [];
         let imageCount = attachments.filter((item) => item.kind === 'image').length;
+        const nextId = () => 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
         for (const file of files) {
           const mediaType = String(file.type || '').toLowerCase();
           const isImage = ATTACH_IMAGE_TYPES.has(mediaType);
+          const isDirectory = Boolean(directories && directories.has(file));
+          if (isDirectory) {
+            const path = hostPathFor(file);
+            if (!path) {
+              showToast('文件夹只能在桌面应用里拖入；浏览器里请添加里面的单个文件');
+              continue;
+            }
+            accepted.push({
+              id: nextId(), kind: 'dir', name: file.name || '文件夹',
+              mediaType: '', size: 0, path, previewUrl: '',
+            });
+            continue;
+          }
           if (isImage && imageCount >= ATTACH_MAX_IMAGES) {
             showToast('一次最多附 ' + ATTACH_MAX_IMAGES + ' 张图片');
             break;
           }
-          const limit = isImage ? ATTACH_MAX_IMAGE_BYTES : ATTACH_MAX_FILE_BYTES;
-          if (file.size > limit) {
-            showToast('「' + (file.name || '附件') + '」超过 ' + Math.round(limit / 1024 / 1024) + 'MB，没有添加');
+          if (isImage) {
+            if (file.size > ATTACH_MAX_IMAGE_BYTES) {
+              showToast('「' + (file.name || '图片') + '」超过 ' + Math.round(ATTACH_MAX_IMAGE_BYTES / 1024 / 1024) + 'MB，没有添加');
+              continue;
+            }
+          }
+          /* 能拿到真实路径的普通文件：只记路径，由 CLI 直接读原文件。 */
+          const path = isImage ? '' : hostPathFor(file);
+          if (path) {
+            accepted.push({
+              id: nextId(), kind: 'file', name: file.name || '附件',
+              mediaType: mediaType || 'application/octet-stream',
+              size: file.size, path, previewUrl: '',
+            });
+            continue;
+          }
+          if (file.size > ATTACH_MAX_FILE_BYTES) {
+            showToast('「' + (file.name || '附件') + '」超过 ' + Math.round(ATTACH_MAX_FILE_BYTES / 1024 / 1024) + 'MB，没有添加');
             continue;
           }
           try {
             const read = await readAttachment(file);
             accepted.push({
-              id: 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+              id: nextId(),
               kind: isImage ? 'image' : 'file',
               name: file.name || (isImage ? '图片' : '附件'),
               mediaType: isImage ? mediaType : (mediaType || 'application/octet-stream'),
@@ -4656,11 +4730,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
 
       const removeAttachment = (id) => setAttachments((current) => current.filter((item) => item.id !== id));
 
-      /** 发给 Host 的线上形态：只带名字/类型/字节；kind 由 Host 按文件头复核。 */
+      /**
+       * 发给 Host 的线上形态：带字节的上传，或带绝对路径的引用（文件夹/拖入的文件）。
+       * kind 只作提示，Host 会按字节和文件系统重新核一遍。
+       */
       const wireAttachments = (list) => (list || []).map((item) => ({
         name: item.name,
         mediaType: item.mediaType,
-        data: item.data,
+        kind: item.kind,
+        ...(item.path ? { path: item.path } : {}),
+        ...(item.data ? { data: item.data } : {}),
       }));
 
       const send = async (override) => {
@@ -5297,7 +5376,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     title: att.name || '图片',
                   })
                   : h('span', { key: att.file || att.name || attIndex, className: 'cw-msg-att-file', title: att.name || '' },
-                    h(Icon, { name: 'file', size: 14 }),
+                    h(Icon, { name: att.kind === 'dir' ? 'folder' : 'file', size: 14 }),
                     h('span', { className: 'cw-attach-name' }, att.name || '附件'))
               ))) : null,
               item.text ? h('div', { className: 'cw-bubble-user' }, item.text) : null,
@@ -5563,7 +5642,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   if (!event.dataTransfer) return;
                   event.preventDefault();
                   setDragging(false);
-                  addFiles(event.dataTransfer.files);
+                  const picked = transferFiles(event.dataTransfer);
+                  addFiles(picked.files, picked.directories);
                 },
               },
                 attachments.length ? h('div', { className: 'cw-attachrail' }, attachments.map((item) => (
@@ -5578,9 +5658,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                         onClick: () => removeAttachment(item.id),
                       }, h(Icon, { name: 'x', size: 10 })))
                     : h('div', { key: item.id, className: 'cw-attach-file' },
-                      h(Icon, { name: 'file', size: 16 }),
-                      h('span', { className: 'cw-attach-name', title: item.name }, item.name),
-                      h('span', { className: 'cw-attach-size' }, fmtBytes(item.size)),
+                      h(Icon, { name: item.kind === 'dir' ? 'folder' : 'file', size: 16 }),
+                      h('span', { className: 'cw-attach-name', title: item.path || item.name }, item.name),
+                      h('span', { className: 'cw-attach-size' }, item.kind === 'dir' ? '文件夹' : fmtBytes(item.size)),
                       h('button', {
                         type: 'button',
                         className: 'cw-attach-x',
@@ -5604,20 +5684,10 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   onPaste: (event) => {
                     const data = event.clipboardData;
                     if (!data) return;
-                    const files = [];
-                    if (data.items) {
-                      for (const item of data.items) {
-                        if (item.kind !== 'file') continue;
-                        const file = item.getAsFile();
-                        if (file) files.push(file);
-                      }
-                    }
-                    if (!files.length && data.files) {
-                      for (const file of data.files) files.push(file);
-                    }
-                    if (!files.length) return;
+                    const picked = transferFiles(data);
+                    if (!picked.files.length) return;
                     event.preventDefault();
-                    addFiles(files);
+                    addFiles(picked.files, picked.directories);
                   },
                   onKeyDown: (event) => {
                     // 中文输入法按 Enter 是「确认候选词」，此时 keydown 仍会到这里。

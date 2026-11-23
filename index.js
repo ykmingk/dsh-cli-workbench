@@ -568,7 +568,9 @@ function attachmentNote(attachments, options) {
   const withImages = Boolean(options && options.images);
   const rows = (attachments || [])
     .filter((attachment) => withImages || attachment.kind !== 'image')
-    .map((attachment) => '- ' + attachment.name + (attachment.kind === 'image' ? '（图片）' : '') + '：' + attachment.path);
+    .map((attachment) => '- ' + attachment.name
+      + (attachment.kind === 'dir' ? '（文件夹）' : attachment.kind === 'image' ? '（图片）' : '')
+      + '：' + attachment.path);
   if (!rows.length) return '';
   return '\n\n【附件】已保存到本机，需要内容时直接读取对应路径：\n' + rows.join('\n');
 }
@@ -2290,16 +2292,40 @@ class Workbench {
     if (!Array.isArray(list) || list.length === 0) return [];
     if (list.length > ATTACH_MAX_ITEMS) throw new Error('附件最多 ' + ATTACH_MAX_ITEMS + ' 个');
     const dir = path.join(this.attachmentsDir, session.id);
-    mkdirSync(dir, { recursive: true });
     const saved = [];
     let total = 0;
+    let prepared = false;
     for (const entry of list) {
-      const encoded = text(entry && entry.data);
+      if (!entry) continue;
+      const name = attachmentFileName(entry.name);
+      const declared = text(entry.mediaType).toLowerCase();
+      const rawPath = text(entry.path);
+      const encoded = text(entry.data);
+      /* 桌面端拖进来的文件与文件夹只给绝对路径：不复制内容，原样交给 CLI 读。
+         路径来自用户自己的拖放（Electron 的 webUtils），这里仍要核实存在性与类型。 */
+      if (!encoded && rawPath) {
+        if (!path.isAbsolute(rawPath)) throw new Error('「' + name + '」的路径不是绝对路径');
+        let info;
+        try { info = statSync(rawPath); } catch { throw new Error('找不到「' + name + '」：' + rawPath); }
+        if (text(entry.kind) === 'dir') {
+          if (!info.isDirectory()) throw new Error('「' + name + '」不是文件夹');
+          saved.push({ kind: 'dir', name, file: '', mediaType: '', size: 0, path: rawPath });
+          continue;
+        }
+        if (!info.isFile()) throw new Error('「' + name + '」不是文件');
+        saved.push({
+          kind: 'file',
+          name,
+          file: '',
+          mediaType: declared || 'application/octet-stream',
+          size: info.size,
+          path: rawPath,
+        });
+        continue;
+      }
       if (!encoded) continue;
       const bytes = Buffer.from(encoded, 'base64');
       if (!bytes.length) continue;
-      const name = attachmentFileName(entry.name);
-      const declared = text(entry.mediaType).toLowerCase();
       const image = ATTACH_IMAGE_TYPES.has(declared) && looksLikeImage(bytes, declared);
       const limit = image ? ATTACH_MAX_IMAGE_BYTES : ATTACH_MAX_FILE_BYTES;
       if (bytes.length > limit) {
@@ -2310,6 +2336,7 @@ class Workbench {
       if (total > ATTACH_MAX_TOTAL_BYTES) {
         throw new Error('附件合计超过 ' + Math.round(ATTACH_MAX_TOTAL_BYTES / 1024 / 1024) + 'MB，请分批发。');
       }
+      if (!prepared) { mkdirSync(dir, { recursive: true }); prepared = true; }
       const file = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + '-' + name;
       const target = path.join(dir, file);
       writeFileSync(target, bytes);
@@ -2338,7 +2365,9 @@ class Workbench {
     const title = session.title === '新会话' || !session.title;
     if (title) {
       const first = text(content).trim()
-        || (attachments.length ? (attachments[0].kind === 'image' ? '图片：' : '附件：') + attachments[0].name : '');
+        || (attachments.length
+          ? (attachments[0].kind === 'image' ? '图片：' : attachments[0].kind === 'dir' ? '文件夹：' : '附件：') + attachments[0].name
+          : '');
       session.title = oneLine(first, 36) || '新会话';
     }
     this.push(session, {

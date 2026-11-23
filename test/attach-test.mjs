@@ -48,10 +48,13 @@ ok('抽到 saveAttachments 方法体', Boolean(methodBlock));
 const buildSave = () => {
   const body = methodBlock.slice(methodBlock.indexOf('{') + 1, methodBlock.lastIndexOf('}'));
   const factory = new Function(
-    'path', 'mkdirSync', 'writeFileSync', 'randomBytes', 'text',
+    'path', 'mkdirSync', 'writeFileSync', 'statSync', 'randomBytes', 'text',
     helperSrc + '\n return function saveAttachments(session, list) {' + body + '};',
   );
-  return factory(path, fs.mkdirSync, fs.writeFileSync, randomBytes, (value) => (value == null ? '' : String(value)));
+  return factory(
+    path, fs.mkdirSync, fs.writeFileSync, fs.statSync, randomBytes,
+    (value) => (value == null ? '' : String(value)),
+  );
 };
 
 const PNG = Buffer.from(
@@ -105,16 +108,50 @@ try {
 } catch (error) { tooMany = error.message; }
 ok('超过 10 个附件被拒', /最多 10 个/.test(tooMany), tooMany);
 
+/* —— 桌面端拖进来的路径引用：文件夹与文件都不复制 —— */
+const folder = path.join(dir, '拖进来的文件夹');
+fs.mkdirSync(folder, { recursive: true });
+const referenced = save.call(workbench, session, [
+  { kind: 'dir', name: '拖进来的文件夹', path: folder },
+]);
+ok('文件夹按路径挂上，没有复制', referenced.length === 1 && referenced[0].kind === 'dir'
+  && referenced[0].path === folder && referenced[0].file === '');
+
+const looseFile = path.join(dir, '外部文件.txt');
+fs.writeFileSync(looseFile, 'outside');
+const fileRef = save.call(workbench, session, [{ kind: 'file', name: '外部文件.txt', path: looseFile }]);
+ok('文件按路径挂上，大小取自磁盘', fileRef[0].kind === 'file' && fileRef[0].size === 7 && fileRef[0].file === '');
+
+let relative = '';
+try { save.call(workbench, session, [{ kind: 'dir', name: 'x', path: '相对\\路径' }]); }
+catch (error) { relative = error.message; }
+ok('相对路径被拒', /绝对路径/.test(relative), relative);
+
+let missing = '';
+try { save.call(workbench, session, [{ kind: 'dir', name: 'x', path: path.join(dir, '不存在') }]); }
+catch (error) { missing = error.message; }
+ok('不存在的路径被拒', /找不到/.test(missing), missing);
+
+let wrongType = '';
+try { save.call(workbench, session, [{ kind: 'dir', name: '其实是文件', path: looseFile }]); }
+catch (error) { wrongType = error.message; }
+ok('把文件当文件夹会被拒', /不是文件夹/.test(wrongType), wrongType);
+
 /* —— 正文里的附件说明 —— */
 const note = new Function(helperSrc + '\n return attachmentNote;')();
 const withFile = note([{ name: 'a.txt', kind: 'file', path: 'C:/x/a.txt' }]);
 ok('文件附件给出落盘路径', withFile.includes('a.txt') && withFile.includes('C:/x/a.txt'));
 ok('Claude 正文不列图片路径', !note([{ name: 'b.png', kind: 'image', path: 'C:/x/b.png' }]).includes('b.png'));
 ok('Codex 正文连图片路径一起列', note([{ name: 'b.png', kind: 'image', path: 'C:/x/b.png' }], { images: true }).includes('C:/x/b.png'));
+ok('文件夹在正文里标明类型', note([{ name: 'docs', kind: 'dir', path: 'C:/x/docs' }]).includes('（文件夹）'));
 
 /* —— 客户端接线（静态断言：这些名字是 UI 与 Host 的契约） —— */
 ok('客户端有粘贴接图片', clientSrc.includes('onPaste: (event) =>') && clientSrc.includes('event.clipboardData'));
-ok('客户端有拖放接文件', clientSrc.includes('onDrop: (event) =>') && clientSrc.includes('addFiles(event.dataTransfer.files)'));
+ok('客户端有拖放接文件', clientSrc.includes('onDrop: (event) =>') && clientSrc.includes('addFiles(picked.files, picked.directories)'));
+ok('客户端认得出文件夹', clientSrc.includes('webkitGetAsEntry') && clientSrc.includes("kind: 'dir'"));
+ok('文件夹靠桌面端路径桥', clientSrc.includes('__DSH_HOST_PATHS__') && clientSrc.includes('hostPathFor'));
+ok('拖进来的文件只带路径', clientSrc.includes('const path = isImage ? \'\' : hostPathFor(file)'));
+ok('文件夹卡片用文件夹图标', clientSrc.includes("item.kind === 'dir' ? 'folder' : 'file'"));
 ok('客户端有圆形 + 按钮', clientSrc.includes("className: 'cw-add'") && clientSrc.includes("name: 'plus'"));
 ok('客户端有隐藏的文件选择器', clientSrc.includes("ref: fileInputRef") && clientSrc.includes("type: 'file'"));
 ok('附件按会话分开存', clientSrc.includes('const [attachMap, setAttachMap] = useState({})'));
