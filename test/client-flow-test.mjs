@@ -247,7 +247,8 @@ async function render() {
 
 const nodesOf = (target) => collect(target || tree);
 const byClass = (target, token) => nodesOf(target).filter((node) => (node.props && String(node.props.className || '').split(/\s+/).includes(token)));
-const textareaOf = (target) => nodesOf(target).find((node) => node.props && node.props['aria-label'] === '任务输入');
+/* 输入框是 contenteditable 的 div（不是 textarea）：按类名找，正文由编辑器 DOM 持有 */
+const editorOf = (target) => nodesOf(target).find((node) => node.props && String(node.props.className || '').includes('cw-editor'));
 const fileInputOf = (target) => nodesOf(target).find((node) => node.props && node.props.type === 'file');
 const sendButtonOf = (target) => nodesOf(target).find((node) => node.props
   && String(node.props.className || '').includes('cw-send')
@@ -262,9 +263,15 @@ function allText(node, out = []) {
   return out;
 }
 
+/* 假编辑器节点：一个文本节点就是「用户输入了这段字」，序列化后就是草稿。 */
+const fakeEditor = (value) => ({
+  nodeType: 1,
+  tagName: 'DIV',
+  childNodes: value ? [{ nodeType: 3, textContent: value }] : [],
+});
+
 function typeText(value) {
-  const area = textareaOf();
-  area.props.onChange({ target: { value, style: {}, scrollHeight: 20 } });
+  editorOf().props.onInput({ currentTarget: fakeEditor(value) });
 }
 
 function pickImage(name = '截图.png') {
@@ -280,7 +287,9 @@ await render();
 
 console.log('\n[1] 有个能用的输入框与「+」选择器');
 {
-  ok('输入框渲染出来了', Boolean(textareaOf()), textareaOf() && textareaOf().props.value);
+  ok('输入框渲染出来了', Boolean(editorOf()), editorOf() && String(editorOf().props['data-placeholder'] || ''));
+  ok('输入框是 contenteditable（内联引用要靠它）', Boolean(editorOf()) && editorOf().props.contentEditable === true
+    && editorOf().props.role === 'textbox');
   ok('隐藏的文件选择器在（点 + 打开它）', Boolean(fileInputOf()) && fileInputOf().props.multiple === true);
   ok('发送键初始是禁用的', Boolean(sendButtonOf()) && sendButtonOf().props.disabled === true);
 }
@@ -314,7 +323,7 @@ console.log('\n[3] 发送成功：POST 体里带上了正文与图片字节');
   ok('附件带上名字/类型/字节', Boolean(attachment) && attachment.name === '截图.png'
     && attachment.mediaType === 'image/png' && attachment.kind === 'image'
     && attachment.data === PNG.toString('base64'));
-  ok('发送后草稿清空', textareaOf() && textareaOf().props.value === '');
+  ok('发送后草稿清空（发送键又变灰）', sendButtonOf() && sendButtonOf().props.disabled === true);
   ok('发送后附件 rail 消失', byClass(null, 'cw-attachrail').length === 0);
 }
 
@@ -329,7 +338,7 @@ console.log('\n[5] 粘贴截图：剪贴板里的 file item 变成附件（不�
 
   const pasted = { name: '粘贴的图.png', type: 'image/png', size: PNG.length, __b64: PNG.toString('base64') };
   let prevented = false;
-  textareaOf().props.onPaste({
+  editorOf().props.onPaste({
     clipboardData: { items: [{ kind: 'file', getAsFile: () => pasted }] },
     preventDefault: () => { prevented = true; },
   });
@@ -392,7 +401,7 @@ console.log('\n[4] 首条消息失败：文字与附件回到新会话的输入�
   await flush();
   await render();
   ok('失败前：草稿与缩略图都在', byClass(null, 'cw-attachrail').length === 1
-    && textareaOf().props.value === '这段别丢');
+    && sendButtonOf().props.disabled === false);
 
   sendButtonOf().props.onClick();
   await flush();
@@ -400,9 +409,18 @@ console.log('\n[4] 首条消息失败：文字与附件回到新会话的输入�
 
   const message = posts.find((entry) => /\/message$/.test(entry.path));
   ok('首发请求确实发出去了（并被服务端拒掉）', Boolean(message), message && message.path);
-  ok('文字回到输入框', textareaOf() && textareaOf().props.value === '这段别丢', textareaOf() && JSON.stringify(textareaOf().props.value));
   ok('附件也回到输入框（不再只剩一句提示）', byClass(null, 'cw-attachrail').length === 1);
   ok('提示说清楚了文字与附件都还回来了', allText(tree).join(' ').includes('文字与附件已放回输入框'));
+
+  /* 文字是否真的回来了：再点一次发送，看这次 POST 的正文。
+     （编辑器正文由 DOM 持有，shim 里没有 DOM，所以用第二次请求来验。） */
+  posts.length = 0;
+  ok('发送键仍可用（草稿没被清空）', sendButtonOf() && sendButtonOf().props.disabled === false);
+  sendButtonOf().props.onClick();
+  await flush();
+  await render();
+  const retry = posts.find((entry) => /\/message$/.test(entry.path));
+  ok('文字回到输入框（重发时正文就是它）', retry && retry.body.text === '这段别丢', retry && JSON.stringify(retry.body.text));
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

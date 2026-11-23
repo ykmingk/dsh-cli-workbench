@@ -136,10 +136,11 @@ token 用量、缓存命中、上下文占用、token 速度不在右侧检查�
 
 - **选区**：只在 `.cw-scroll` 里响应 `mouseup`；锚点和焦点必须落在**同一条** `.cw-msg` 里（跨条没法归属到某个气泡，CLI 那边也分不清出自哪一条）。空白选区不弹。
 - **浮动按钮**：`fixed` + 选区 `getBoundingClientRect()` 定位，选区太靠顶（<52px）就改到下方；横向做 8px 边界夹紧。点别处、按 Esc、滚动都会收起——`fixed` 不会跟着选区走，留着就是错位的按钮。
-- **落地形态是内联，不是 chip**：点引用后调用 `insertQuoteText(draft, 原文, caret)`，把 `【原文】` 插到**输入框当前光标处**（没聚焦过就接在末尾），光标落到引用之后、并重算输入框高度。`【】` 就是草稿里的普通文字，可编辑、可删除、跟着消息一起发出去。
-  - 纯函数 `insertQuoteText` 负责：引用里的换行/缩进压成一个空格；光标两侧需要时补空格；光标越界/非数字/负数都夹到合法位置。
-- **不再有**：顶部 chip rail、`quotePrefix()` 拼在文首的 `> ` 引用块、切会话清空引用的逻辑——引用已经是草稿的一部分。
+- **输入框是 contenteditable**（`.cw-editor`），不再是 textarea——只有这样才能把引用画成一枚真正的「块」嵌在正文流里。正文的真相仍是字符串 `draft`：`【原文】` 是引用在草稿里的编码，`parseDraft()` 把它切成片段，`syncEditor()` 按片段画成 `.cw-editor-quote`（`“` + 单行截断的原文，`contenteditable=false` + `data-quote`）；用户打字时 `serializeEditor()` 把 DOM 还原回 `【…】` 文本。**只有草稿与 DOM 不一致时才重画**，否则每次输入都会把光标顶走。
+- **插入位置**：点引用时焦点/选区其实在消息那边，所以优先用编辑器里**最后一次记住的光标**（`editorCaretRef`，在 input / keyup / mouseup 时更新），没有才接末尾；插完光标落到引用后面的空格之后。
+- **输入行为**：Enter 发送、Shift+Enter 由浏览器插 `<br>`、序列化成换行；粘贴纯文本强制走 `insertPlainText`（`execCommand('insertText')`，失败再手动插文本节点），图片粘贴仍走附件通道；IME 合成期间不发送。
 - **渲染**：用户气泡里 `【…】` 渲染成 `.cw-quote-inline`（浅底 + 2px 左侧竖线 + 弱化色，`box-decoration-break: clone` 让跨行时两端都有竖线）；老消息里以 `> ` 开头的行仍按 `.cw-quote-block` 渲染，历史不改写。其余一律纯文本，**不**给用户气泡上完整 Markdown（用户写的 `*`、`_` 不该变斜体）。
+- **兜底**：没有 DOM（测试里的 React shim）或编辑器不在文档里时，退回 `insertQuoteText()` 拼字符串，行为与光标插入一致。
 - **上限**：一段 2000 字（超出截断并 toast 提示）。
 
 ## 复制 Session ID（排查问题用）

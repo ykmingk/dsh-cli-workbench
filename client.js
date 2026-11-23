@@ -42,6 +42,68 @@ window.__ModuleLoader__.load({
       const tail = after && !/^\s/.test(after) ? ' ' : '';
       return { text: before + lead + marker + tail + after, caret: before.length + lead.length + marker.length };
     };
+
+    /**
+     * 草稿 → 片段列表。输入框是 contenteditable：`【原文】` 会画成一枚内联引用块
+     * （`“` + 单行截断的原文），其余是普通文字。
+     */
+    const parseDraft = (value) => {
+      const source = String(value == null ? '' : value);
+      const segments = [];
+      const pattern = /【([^】]*)】/g;
+      let cursor = 0;
+      let match;
+      while ((match = pattern.exec(source)) !== null) {
+        if (match.index > cursor) segments.push({ type: 'text', text: source.slice(cursor, match.index) });
+        segments.push({ type: 'quote', text: match[1] });
+        cursor = match.index + match[0].length;
+      }
+      if (cursor < source.length) segments.push({ type: 'text', text: source.slice(cursor) });
+      return segments;
+    };
+
+    /**
+     * 编辑器 DOM → 草稿文本：引用块还原成 `【原文】`，`<br>` 还原成换行，
+     * 浏览器自己塞进来的 `<div>` 块之间补换行。纯函数，测试里喂假节点也能跑。
+     */
+    const serializeEditor = (node) => {
+      if (!node) return '';
+      let out = '';
+      const walk = (current) => {
+        if (!current) return;
+        if (current.nodeType === 3) { out += current.textContent || ''; return; }
+        if (current.nodeType !== 1) return;
+        const tag = String(current.tagName || '').toLowerCase();
+        if (tag === 'br') { out += '\n'; return; }
+        const quote = current.getAttribute ? current.getAttribute('data-quote') : null;
+        if (quote != null) { out += QUOTE_OPEN + quote + QUOTE_CLOSE; return; }
+        /* 浏览器自己塞进来的块（Enter 换行时常见）：块之间补一个换行 */
+        if ((tag === 'div' || tag === 'p') && out && !/\n$/.test(out)) out += '\n';
+        const children = current.childNodes ? Array.from(current.childNodes) : [];
+        for (const child of children) walk(child);
+      };
+      const roots = node.childNodes ? Array.from(node.childNodes) : [];
+      for (const child of roots) walk(child);
+      return out;
+    };
+
+    /** 造一枚内联引用块（只在浏览器里有 document 时用到）。 */
+    const createQuoteChip = (text) => {
+      const chip = document.createElement('span');
+      chip.className = 'cw-editor-quote';
+      chip.setAttribute('contenteditable', 'false');
+      chip.setAttribute('data-quote', text);
+      chip.title = text;
+      const mark = document.createElement('span');
+      mark.className = 'cw-editor-quote-mark';
+      mark.textContent = '\u201c';
+      const body = document.createElement('span');
+      body.className = 'cw-editor-quote-text';
+      body.textContent = text;
+      chip.appendChild(mark);
+      chip.appendChild(body);
+      return chip;
+    };
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -1148,12 +1210,26 @@ window.__ModuleLoader__.load({
   box-shadow: var(--cw-elev-soft); --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
   padding: 4px 8px 7px; display: flex; flex-direction: column; gap: 2px;
 }
-.cw-inputbox textarea{
+/* 输入区：contenteditable 的正文层。尺寸口径与原来的 textarea 一致，
+   换实现只是为了让内联引用块能嵌在文字流里。 */
+.cw-editor{
   display: block; width: 100%; height: auto; min-height: 76px; max-height: 336px; flex: none;
-  resize: none; border: 0; outline: none; background: transparent;
+  overflow-y: auto; border: 0; outline: none; background: transparent;
   padding: 6px 10px 2px;
   font-size: var(--cw-fs-base); line-height: var(--cw-lh-lg); caret-color: var(--cw-running);
+  color: var(--cw-text);
+  white-space: pre-wrap; word-break: break-word;
 }
+.cw-editor:empty::before{ content: attr(data-placeholder); color: var(--cw-placeholder); pointer-events: none; }
+/* 内联引用块：一枚不可编辑的小块，“ + 单行截断的原文，后面可以直接接着打字。
+   注意：这段 CSS 在 String.raw 模板里，注释里不能出现反引号或美元花括号。 */
+.cw-editor-quote{
+  display: inline-flex; align-items: baseline; gap: 2px; max-width: min(70%, 420px);
+  margin-right: 2px; padding: 0 6px 0 4px; border-radius: 5px;
+  background: var(--cw-hover); color: var(--cw-muted); vertical-align: bottom;
+}
+.cw-editor-quote-mark{ flex: none; color: var(--cw-subtle); font-size: 1.05em; line-height: 1; }
+.cw-editor-quote-text{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 底部行至少 34px（发送键高度），且不被 flex 压缩——否则圆角卡会把它裁掉一截。 */
 .cw-input-foot{ flex: none; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 0 0 2px; }
 /* 发送 / 停止键靠 margin-left:auto 贴右（工具条是普通 flex 子项，不会自己撑满） */
@@ -1912,7 +1988,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
   .cw-pillbtn .cw-pill-text{ display: none; }
   .cw-pillbtn{ padding: 0 8px; }
   .cw-picker{ max-width: 30vw; }
-  .cw-inputbox textarea{ min-height: 64px; }
+  .cw-editor{ min-height: 64px; }
 }
 
 /* 3) 高度不够时（1366×768 这类笔记本在 125% 下只剩约 614px 高），
@@ -1921,7 +1997,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
   .cw-dock{ padding: 8px 12px 8px; }
   .cw-rail-head{ padding: 8px 10px 6px; }
   .cw-rail-title-row{ margin-bottom: 6px; }
-  .cw-inputbox textarea{ min-height: 56px; }
+  .cw-editor{ min-height: 56px; }
 }
 @keyframes cw-pulse{ 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes cw-spin{ to{ transform: rotate(360deg) } }
@@ -4076,8 +4152,13 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const [approvalResult, setApprovalResult] = useState(null);
       const rootRef = useRef(null);
       const scrollRef = useRef(null);
-      const textareaRef = useRef(null);
       const fileInputRef = useRef(null);
+      /* 输入框换成 contenteditable 之后，正文由编辑器的 DOM 负责：这个 ref 既是
+         「把草稿画进去」的目标，也是插入引用块、放光标的地方。 */
+      const editorRef = useRef(null);
+      /* 编辑器里最后一次的光标/选区：点「引用」时焦点已经在消息那边了，
+         要靠它把引用插回原来打字的位置。 */
+      const editorCaretRef = useRef(null);
       const [dragging, setDragging] = useState(false);
       const modelMenuRef = useRef(null);
 
@@ -4105,7 +4186,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       /* 草稿跟着会话走，输入框高度也得跟着重算：
          否则切到短草稿会留着上一个会话的行数（空草稿还会撑着一大块）。 */
       useEffect(() => {
-        const element = textareaRef.current;
+        const element = editorRef.current;
         if (!element) return;
         element.style.height = 'auto';
         element.style.height = Math.min(336, element.scrollHeight) + 'px';
@@ -4895,23 +4976,141 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
        * 引用落地：插到**光标处**（输入框没焦点过就接在末尾），形如
        * `【被引用的原文】`，跟正文一起可编辑、可删除——不再往输入框上方堆 chip。
        */
+      /* ------------------------------------------------- 输入框：contenteditable */
+
+      /**
+       * 把草稿画进编辑器：`【原文】` 变成内联引用块（“ + 单行截断的原文），
+       * 其余是普通文字。**只在草稿和编辑器内容不一致时才重画**——用户打字时
+       * onEditorInput 已经把 DOM 同步成同一份文本，重画会把光标顶走。
+       */
+      const syncEditor = (value) => {
+        const editor = editorRef.current;
+        /* 没有 DOM（比如测试里的 shim）就什么都不做：草稿本身仍是唯一真相。 */
+        if (!editor || typeof document === 'undefined') return;
+        if (serializeEditor(editor) === value) return;
+        editor.textContent = '';
+        for (const segment of parseDraft(value)) {
+          if (segment.type === 'quote') editor.appendChild(createQuoteChip(segment.text));
+          else if (segment.text) editor.appendChild(document.createTextNode(segment.text));
+        }
+        syncEditorHeight(editor);
+        setCaretToEnd(editor);
+      };
+
+      const syncEditorHeight = (editor) => {
+        if (!editor || !editor.style) return;
+        editor.style.height = 'auto';
+        editor.style.height = Math.min(336, editor.scrollHeight || 0) + 'px';
+      };
+
+      const setCaretToEnd = (editor) => {
+        if (!editor || typeof window === 'undefined' || !window.getSelection || !document.createRange) return;
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          range.collapse(false);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          editorCaretRef.current = range.cloneRange();
+        } catch { /* 编辑器不在文档里就跳过 */ }
+      };
+
+      /** 记住编辑器里的光标位置（输入、点击、方向键之后都调一次）。 */
+      const rememberCaret = () => {
+        const editor = editorRef.current;
+        const selection = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+        if (!editor || !selection || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+        if (range && editor.contains(range.commonAncestorContainer)) {
+          try { editorCaretRef.current = range.cloneRange(); } catch { /* ignore */ }
+        }
+      };
+
+      /* 草稿被别处改掉（清空、回填、删技能令牌）时同步编辑器 */
+      useEffect(() => { syncEditor(draft); }, [draft]);
+
+      const onEditorInput = (event) => {
+        const editor = event && event.currentTarget ? event.currentTarget : editorRef.current;
+        if (!editor) return;
+        setDraft(serializeEditor(editor));
+        syncEditorHeight(editor);
+        rememberCaret();
+      };
+
+      /** 无格式粘贴：优先用浏览器自己的 insertText（保留撤销栈），不行再手动插。 */
+      const insertPlainText = (text) => {
+        const editor = editorRef.current;
+        if (!editor || !text || typeof document === 'undefined') return;
+        let inserted = false;
+        if (document.execCommand) {
+          try { inserted = document.execCommand('insertText', false, text); } catch { inserted = false; }
+        }
+        if (!inserted) {
+          const node = document.createTextNode(text);
+          const selection = window.getSelection ? window.getSelection() : null;
+          const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+          if (range && editor.contains(range.commonAncestorContainer)) {
+            range.deleteContents();
+            range.insertNode(node);
+            range.setStartAfter(node);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          } else {
+            editor.appendChild(node);
+            setCaretToEnd(editor);
+          }
+        }
+        setDraft(serializeEditor(editor));
+        syncEditorHeight(editor);
+      };
+
+      /**
+       * 在光标处插一枚引用块 + 一个空格，光标落到空格后面——跟 DSH 一样，
+       * 引用嵌在正文流里，接着说自己的话。
+       */
+      const insertQuoteAtCaret = (text) => {
+        const editor = editorRef.current;
+        const fallback = () => {
+          const next = insertQuoteText(draft, text, draft.length);
+          setDraft(next.text);
+        };
+        if (!editor || typeof document === 'undefined') { fallback(); return; }
+        const chip = createQuoteChip(text);
+        const space = document.createTextNode(' ');
+        /* 点「引用」时焦点/选区其实在消息那边（按钮用 mousedown preventDefault 保住的
+           是消息选区）。所以优先用**编辑器里最后一次的光标位置**，没有才接末尾。 */
+        const selection = window.getSelection ? window.getSelection() : null;
+        const live = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+        let range = null;
+        if (live && editor.contains(live.commonAncestorContainer)) range = live;
+        else if (editorCaretRef.current && editor.contains(editorCaretRef.current.commonAncestorContainer)) {
+          try { range = editorCaretRef.current.cloneRange(); } catch { range = null; }
+        }
+        if (range) {
+          range.deleteContents();
+          range.insertNode(space);
+          range.insertNode(chip);
+          range.setStartAfter(space);
+          range.collapse(true);
+          if (selection) { selection.removeAllRanges(); selection.addRange(range); }
+          try { editorCaretRef.current = range.cloneRange(); } catch { /* ignore */ }
+        } else {
+          editor.appendChild(chip);
+          editor.appendChild(space);
+          setCaretToEnd(editor);
+        }
+        setDraft(serializeEditor(editor));
+        syncEditorHeight(editor);
+        editor.focus();
+      };
+
       const addQuote = () => {
         if (!quoteSel) return;
-        const area = textareaRef.current;
-        const caret = area && typeof area.selectionStart === 'number' ? area.selectionStart : draft.length;
-        const next = insertQuoteText(draft, quoteSel.text, caret);
-        setDraft(next.text);
+        insertQuoteAtCaret(quoteSel.text);
         setQuoteSel(null);
         if (quoteSel.clipped) showToast('引用超过 ' + QUOTE_MAX_CHARS + ' 字，已截断');
-        /* 光标落到引用后面，并重算高度（setDraft 不会触发 onChange 里的那段自动撑高） */
-        setTimeout(() => {
-          const element = textareaRef.current;
-          if (!element) return;
-          element.focus();
-          try { element.setSelectionRange(next.caret, next.caret); } catch { /* 只读态忽略 */ }
-          element.style.height = 'auto';
-          element.style.height = Math.min(336, element.scrollHeight) + 'px';
-        }, 0);
       };
 
       /* 点别处 / Esc / 滚动：浮动按钮立刻消失（fixed 定位不会跟着选区走）。 */
@@ -5448,7 +5647,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           return (body ? body + ' ' : '') + '/' + skill.name + ' ';
         });
         showToast('已引用技能「' + skill.name + '」，补上任务后回车发送');
-        setTimeout(() => { if (textareaRef.current) textareaRef.current.focus(); }, 0);
+        setTimeout(() => { if (editorRef.current) editorRef.current.focus(); }, 0);
       };
 
       /** 从草稿里认领仍然是「/名字」的已选技能；用户删掉令牌就不再随消息带上。 */
@@ -5573,11 +5772,21 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         const text = String((item && item.text) || '');
         if (!text) { showToast('这条消息只有附件，没有可修改的文字'); return; }
         setDraft(text);
+        /* 回填后光标落到末尾：同步在下一拍做，等 syncEditor 把内容画进编辑器 */
         setTimeout(() => {
-          const area = textareaRef.current;
-          if (!area) return;
-          area.focus();
-          try { area.setSelectionRange(text.length, text.length); } catch (error) { /* 只读态忽略 */ }
+          const element = editorRef.current;
+          if (!element) return;
+          element.focus();
+          if (typeof window !== 'undefined' && window.getSelection && document.createRange) {
+            try {
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              range.collapse(false);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+            } catch { /* 只读态忽略 */ }
+          }
         }, 0);
         showToast('已放回输入框，改完发送是新消息');
       };
@@ -5983,25 +6192,37 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                         onClick: () => removeAttachment(item.id),
                       }, h(Icon, { name: 'x', size: 10 })))
                 ))) : null,
-                h('textarea', {
-                  ref: textareaRef,
-                  value: draft,
-                  placeholder: currentId ? '描述任务…' : ('描述任务，Enter 会新建一个 ' + providerMeta(currentProvider).label + ' 会话'),
-                  onChange: (event) => {
-                    setDraft(event.target.value);
-                    const element = event.target;
-                    element.style.height = 'auto';
-                    element.style.height = Math.min(336, element.scrollHeight) + 'px';
-                  },
+                /* 输入区：contenteditable（不是 textarea）——这样内联引用才能画成一枚
+                   真正的「块」，嵌在正文流里，跟 DSH 的 composer 一样。
+                   正文由 syncEditor 按 draft 画进来，React 不管它的子节点。 */
+                h('div', {
+                  className: 'cw-editor',
+                  ref: editorRef,
+                  contentEditable: true,
+                  suppressContentEditableWarning: true,
+                  role: 'textbox',
+                  'aria-multiline': 'true',
+                  'aria-label': '任务输入',
+                  'data-placeholder': currentId ? '描述任务…' : ('描述任务，Enter 会新建一个 ' + providerMeta(currentProvider).label + ' 会话'),
+                  onInput: onEditorInput,
+                  onKeyUp: rememberCaret,
+                  onMouseUp: rememberCaret,
                   /* 截图/复制的图片直接贴进输入框：把剪贴板里的 file item 变成附件，
-                     不让它退化成一段乱码文本（DSH 的 composer 也是这么接的）。 */
+                     不让它退化成一段乱码文本（DSH 的 composer 也是这么接的）。
+                     纯文本粘贴则强制走无格式插入，别把网页的 HTML 带进来。 */
                   onPaste: (event) => {
                     const data = event.clipboardData;
                     if (!data) return;
                     const picked = transferFiles(data);
-                    if (!picked.files.length) return;
+                    if (picked.files.length) {
+                      event.preventDefault();
+                      addFiles(picked.files, picked.directories);
+                      return;
+                    }
+                    const plain = data.getData ? data.getData('text/plain') : '';
+                    if (!plain) return;
                     event.preventDefault();
-                    addFiles(picked.files, picked.directories);
+                    insertPlainText(plain);
                   },
                   onKeyDown: (event) => {
                     // 中文输入法按 Enter 是「确认候选词」，此时 keydown 仍会到这里。
@@ -6013,7 +6234,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                       send();
                     }
                   },
-                  'aria-label': '任务输入',
                 }),
                 h('div', { className: 'cw-input-foot' },
                   h('div', { className: 'cw-input-tools' },

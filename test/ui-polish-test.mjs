@@ -54,22 +54,27 @@ console.log('\n[2] 已发出的消息：复制 / 修改');
 
   const block = sliceBlock(srcClient, 'const editUserMessage = (item) =>');
   ok('抽到 editUserMessage', Boolean(block));
+  /* 1.0.49 起输入框是 contenteditable：回填后放光标用的是 Range/Selection，不再是 setSelectionRange */
   const make = () => new Function(
-    'setDraft', 'showToast', 'textareaRef', 'setTimeout',
+    'setDraft', 'showToast', 'editorRef', 'setTimeout', 'window', 'document',
     block + '; return editUserMessage;',
   );
 
   const seen = [];
   const toasts = [];
-  const area = { focused: 0, range: null, focus() { this.focused += 1; }, setSelectionRange(a, b) { this.range = [a, b]; } };
-  const edit = make()((value) => seen.push(value), (text) => toasts.push(text), { current: area }, (fn) => fn());
+  const area = { focused: 0, focus() { this.focused += 1; } };
+  const range = { collapsed: null, selectNodeContents(target) { this.target = target; }, collapse(value) { this.collapsed = value; } };
+  const selection = { added: null, removeAllRanges() { this.removed = true; }, addRange(value) { this.added = value; } };
+  const fakeWindow = { getSelection: () => selection };
+  const fakeDocument = { createRange: () => range };
+  const edit = make()((value) => seen.push(value), (text) => toasts.push(text), { current: area }, (fn) => fn(), fakeWindow, fakeDocument);
   edit({ text: '帮我改一下这段' });
   ok('修改：正文回填输入框', seen.length === 1 && seen[0] === '帮我改一下这段');
-  ok('修改：光标落到末尾', area.focused === 1 && area.range && area.range[0] === '帮我改一下这段'.length);
+  ok('修改：光标落到末尾', area.focused === 1 && range.collapsed === false && selection.added === range);
   ok('修改：说清楚是发新消息，不是改历史', /新消息/.test(toasts.join('')) && !/已删除|已替换/.test(toasts.join('')));
 
   const seen2 = [];
-  const edit2 = make()((value) => seen2.push(value), () => {}, { current: area }, (fn) => fn());
+  const edit2 = make()((value) => seen2.push(value), () => {}, { current: area }, (fn) => fn(), fakeWindow, fakeDocument);
   edit2({ text: '', attachments: [{ name: 'a.png' }] });
   ok('只有附件的消息不会把输入框清空', seen2.length === 0);
 }
