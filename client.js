@@ -17,6 +17,9 @@ window.__ModuleLoader__.load({
        上限把人挡回来。 */
     const ATTACH_MAX_ITEMS = 10;
     const ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
+    /* 引用：一次最多 5 段、每段最多 2000 字（超了截断并提示）。 */
+    const QUOTE_MAX_ITEMS = 5;
+    const QUOTE_MAX_CHARS = 2000;
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -274,6 +277,8 @@ window.__ModuleLoader__.load({
       pin: '<path d="M9.5 2l4.5 4.5-2 .5-2.5 2.5L8 13 6 8l-3-1 3-2.5 1.5-2.5z"/>',
       edit: '<path d="M11 3l2 2-7 7-2.5.5L4 10zM3 14h10"/>',
       copy: '<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M3 11V3h8"/>',
+      /* 引用：两个描边引号，和 DSH 选区浮动按钮的语气一致 */
+      quote: '<path d="M6.2 4.4H4.6A1.6 1.6 0 0 0 3 6v2.2a1.6 1.6 0 0 0 1.6 1.6h1.1v.7c0 .8-.5 1.4-1.3 1.7"/><path d="M12.7 4.4H11a1.6 1.6 0 0 0-1.6 1.6v2.2A1.6 1.6 0 0 0 11 9.8h1.1v.7c0 .8-.5 1.4-1.3 1.7"/>',
       sidebar: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M6 2.5v11"/>',
       sun: '<circle cx="8" cy="8" r="3"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>',
       /* 技能：四角星 + 小星，和 DSH 的「插件」星形同一家族 */
@@ -816,6 +821,47 @@ window.__ModuleLoader__.load({
   font-size: var(--cw-fs-base); line-height: var(--cw-lh-base);
   white-space: pre-wrap; word-break: break-word;
 }
+/* 引用的原文：进消息后以引用块呈现（左侧竖线 + 弱化色），其余仍是纯文本。
+   只认行首 `> `——不给用户气泡上完整 Markdown，免得用户写的 `*` 变成斜体。 */
+.cw-quote-block{
+  margin: 0 0 8px; padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--cw-border-4, var(--cw-border-2));
+  color: var(--cw-muted);
+}
+.cw-quote-block:last-child{ margin-bottom: 0; }
+.cw-quote-line{ white-space: pre-wrap; }
+.cw-plain-block{ white-space: pre-wrap; }
+/* 选区浮动按钮：定位用视口坐标（getBoundingClientRect），所以是 fixed。 */
+.cw-quotebtn{
+  position: fixed; z-index: 96; height: 28px; padding: 0 9px 0 7px;
+  display: inline-flex; align-items: center; gap: 4px;
+  border: .5px solid var(--cw-border-2); border-radius: var(--cw-radius-sm);
+  background: var(--cw-bg); color: var(--cw-text);
+  font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+}
+.cw-quotebtn:hover{ background: var(--cw-hover); }
+.cw-quotebtn .cw-ic{ width: 12px; height: 12px; color: var(--cw-subtle); }
+/* 草稿里的引用：贴在输入框上方，一行一段，右侧 × 单独移除，末尾「清空」 */
+.cw-quoterail{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px 0; }
+.cw-quote-chip{
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  height: 24px; padding: 0 4px 0 8px; border-radius: var(--cw-radius-pill);
+  background: var(--cw-hover); color: var(--cw-muted); font-size: var(--cw-fs-xs);
+}
+.cw-quote-chip .cw-ic{ width: 12px; height: 12px; flex: none; color: var(--cw-subtle); }
+.cw-quote-chip-text{ max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-quote-chip .cw-quote-x{
+  width: 16px; height: 16px; padding: 0; border: 0; border-radius: 999px;
+  display: grid; place-items: center; background: transparent; color: var(--cw-subtle);
+}
+.cw-quote-chip .cw-quote-x:hover{ background: var(--cw-border-2); color: var(--cw-text); }
+.cw-quote-chip .cw-quote-x .cw-ic{ width: 10px; height: 10px; }
+.cw-quote-clear{
+  height: 24px; padding: 0 6px; border: 0; background: transparent;
+  color: var(--cw-subtle); font-size: var(--cw-fs-xs);
+}
+.cw-quote-clear:hover{ color: var(--cw-text); }
 /* 用户消息里的附件：图片直接给缩略图（Host 的 /attachment 端点回放），
    文件给一枚小胶囊。都靠右，和气泡同一列。 */
 .cw-msg-atts{ display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-bottom: 6px; }
@@ -4795,6 +4841,92 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
 
       const removeAttachment = (id) => setAttachments((current) => current.filter((item) => item.id !== id));
 
+      /* ------------------------------------------------------ 引用选中的文字 */
+
+      const [quotes, setQuotes] = useState([]);
+      const [quoteSel, setQuoteSel] = useState(null);
+
+      /**
+       * 选区 → 浮动按钮的数据。只认落在**同一条消息**（`.cw-msg`）里的选区：
+       * 跨条引用没法归属到某个气泡，CLI 那边也读不出是哪一条。
+       * 位置用视口坐标（按钮是 fixed），所以滚动时必须关掉，见下面的 effect。
+       */
+      const captureQuote = () => {
+        const selection = window.getSelection ? window.getSelection() : null;
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) { setQuoteSel(null); return; }
+        const text = String(selection.toString() || '').trim();
+        if (!text) { setQuoteSel(null); return; }
+        const range = selection.getRangeAt(0);
+        const elementOf = (node) => (node && node.nodeType === 1 ? node : (node && node.parentElement));
+        const startEl = elementOf(range.startContainer);
+        const endEl = elementOf(range.endContainer);
+        const startMsg = startEl && startEl.closest ? startEl.closest('.cw-msg') : null;
+        const endMsg = endEl && endEl.closest ? endEl.closest('.cw-msg') : null;
+        if (!startMsg || startMsg !== endMsg) { setQuoteSel(null); return; }
+        const rect = range.getBoundingClientRect();
+        if (!rect || (!rect.width && !rect.height)) { setQuoteSel(null); return; }
+        const clipped = text.length > QUOTE_MAX_CHARS;
+        const below = rect.top < 52;
+        setQuoteSel({
+          text: clipped ? text.slice(0, QUOTE_MAX_CHARS) : text,
+          clipped,
+          role: startMsg.classList.contains('cw-msg-user') ? 'user' : 'assistant',
+          itemId: startMsg.getAttribute('data-msg') || '',
+          x: Math.min(Math.max(8, rect.left + rect.width / 2 - 34), Math.max(8, window.innerWidth - 76)),
+          y: below ? Math.min(rect.bottom + 6, window.innerHeight - 36) : Math.max(8, rect.top - 36),
+        });
+      };
+
+      const addQuote = () => {
+        if (!quoteSel) return;
+        if (quotes.length >= QUOTE_MAX_ITEMS) {
+          showToast('一次最多引用 ' + QUOTE_MAX_ITEMS + ' 段');
+          setQuoteSel(null);
+          return;
+        }
+        setQuotes((current) => [...current, {
+          id: 'q_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+          text: quoteSel.text,
+          role: quoteSel.role,
+          itemId: quoteSel.itemId,
+          at: Date.now(),
+        }]);
+        if (quoteSel.clipped) showToast('引用超过 ' + QUOTE_MAX_CHARS + ' 字，已截断');
+        setQuoteSel(null);
+        if (textareaRef.current) textareaRef.current.focus();
+      };
+
+      /* 发给 CLI 的形态：每行加 `> `、多段之间空一行，整体放在正文最前面。
+         Claude / Codex 都读得懂引用块，不需要额外协议。 */
+      const quotePrefix = () => {
+        if (!quotes.length) return '';
+        const blocks = quotes.map((entry) => String(entry.text || '')
+          .split(/\r?\n/)
+          .map((line) => '> ' + line)
+          .join('\n'));
+        return blocks.join('\n\n') + '\n\n';
+      };
+
+      /* 点别处 / Esc / 滚动：浮动按钮立刻消失（fixed 定位不会跟着选区走）。 */
+      useEffect(() => {
+        if (!quoteSel) return undefined;
+        const onDown = (event) => {
+          const target = event.target;
+          if (target && target.closest && target.closest('.cw-quotebtn')) return;
+          setQuoteSel(null);
+        };
+        const onKey = (event) => { if (event.key === 'Escape') setQuoteSel(null); };
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        return () => {
+          document.removeEventListener('mousedown', onDown, true);
+          document.removeEventListener('keydown', onKey, true);
+        };
+      }, [quoteSel]);
+
+      /* 引用只在一条消息的发送里有效：切会话就清空，免得把别的会话的引用带过去。 */
+      useEffect(() => { setQuotes([]); }, [currentId]);
+
       /**
        * 发给 Host 的线上形态：带字节的上传，或带绝对路径的引用（文件夹/拖入的文件）。
        * kind 只作提示，Host 会按字节和文件系统重新核一遍。
@@ -4828,15 +4960,19 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           const body = (override == null ? draft : override).trim();
           if (!body && !attachments.length) return;
           const plan = planMode ? planPrefix(topProvider) : '';
-          const composed = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+          /* 引用块放在最前面：先给原文，再给指令，CLI 读起来最自然。 */
+          const composed = quotePrefix() + plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
           /* 图片/文件先跟着首条消息走：会话建好之后才有附件目录，
              所以这里把内容一起交给 createSession，由它在建好后发出去。 */
           const pendingAttachments = attachments;
+          /* 引用也一起清掉：它只对这一次发送有效。失败时连引用一起还回去。 */
+          const pendingQuotes = quotes;
           setPendingPrompt(composed);
           setDraft('');
           setFileRef('');
           setSkillRefs([]);
           setAttachments([]);
+          setQuotes([]);
           setPlanMode(false);
           const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''), {
             prompt: composed,
@@ -4846,19 +4982,21 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           if (!created) {
             setDraft(composed);
             setAttachments(pendingAttachments);
+            setQuotes(pendingQuotes);
           }
           return;
         }
         const body = (override == null ? draft : override).trim();
         if (!body && !attachments.length) return;
         const plan = planMode ? planPrefix(topProvider) : '';
-        const content = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+        const content = quotePrefix() + plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
         try {
           await api('/sessions/' + currentId + '/message', {
             method: 'POST',
             body: JSON.stringify({ text: content, attachments: wireAttachments(attachments) }),
           });
           if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); setAttachments([]); }
+          setQuotes([]);
           // 计划只对下一条消息有效：发出去就复位，免得下一条还带着旧指令
           if (planMode) { setPlanMode(false); showToast('计划指令已随这条消息发出，计划模式已关'); }
           refreshSessions();
@@ -5446,6 +5584,43 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         showToast('已放回输入框，改完发送是新消息');
       };
 
+      /**
+       * 用户气泡的正文：只把行首 `> ` 的行渲染成引用块（左侧竖线 + 弱化色），
+       * 其余仍是纯文本。刻意不上完整 Markdown——用户写的 `*`、`_` 会变成斜体，
+       * 改动面太大，也不是他想要的效果。
+       */
+      const renderUserText = (value) => {
+        const lines = String(value || '').split(/\r?\n/);
+        const nodes = [];
+        let plain = [];
+        let quote = [];
+        const flushQuote = () => {
+          if (!quote.length) return;
+          nodes.push(h('div', { key: 'q' + nodes.length, className: 'cw-quote-block' },
+            quote.map((line, lineIndex) => h('div', { key: lineIndex, className: 'cw-quote-line' }, line))));
+          quote = [];
+        };
+        const flushPlain = () => {
+          if (!plain.length) return;
+          nodes.push(h('div', { key: 'p' + nodes.length, className: 'cw-plain-block' }, plain.join('\n')));
+          plain = [];
+        };
+        for (const line of lines) {
+          if (line === '>' || line.startsWith('> ')) {
+            flushPlain();
+            quote.push(line === '>' ? '' : line.slice(2));
+          } else {
+            flushQuote();
+            plain.push(line);
+          }
+        }
+        /* 发送时 quotePrefix 末尾带一个换行：别把它渲染成气泡底部的一行空白。 */
+        while (plain.length && plain[plain.length - 1] === '') plain.pop();
+        flushQuote();
+        flushPlain();
+        return nodes;
+      };
+
       const renderItems = () => {
         if (!viewSession) return h(EmptyState, { provider: currentProvider, onPick: (text) => startNew(currentProvider, undefined, text) });
         if (!items.length) return h(EmptyState, { provider: viewSession.provider, onPick: (text) => send(text) });
@@ -5487,7 +5662,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     h(Icon, { name: att.kind === 'dir' ? 'folder' : 'file', size: 14 }),
                     h('span', { className: 'cw-attach-name' }, att.name || '附件'))
               ))) : null,
-              item.text ? h('div', { className: 'cw-bubble-user' }, item.text) : null,
+              item.text ? h('div', { className: 'cw-bubble-user' }, renderUserText(item.text)) : null,
             ));
             index += 1;
             continue;
@@ -5718,7 +5893,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               h('div', {
                 className: 'cw-scroll',
                 ref: scrollRef,
-                onScroll: measureDistance,
+                /* 选区浮动按钮用视口坐标定位，滚动后位置就不对了：直接收起来。 */
+                onScroll: (event) => { measureDistance(event); if (quoteSel) setQuoteSel(null); },
+                /* 松开鼠标时看选区：落在同一条消息里才浮出「引用」按钮。
+                   放在滚动容器上而不是 document 上：侧栏/输入框里的选择不该触发。 */
+                onMouseUp: captureQuote,
               },
                 h('div', { className: 'cw-page' }, renderItems(),
                   /* 正在干什么写在正文最后一行（DSH 的 RunningStatus 就在这里） */
@@ -5762,6 +5941,24 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   addFiles(picked.files, picked.directories);
                 },
               },
+                /* 引用贴在最上面：一段一条，右侧 × 单独移除，末尾「清空」 */
+                quotes.length ? h('div', { className: 'cw-quoterail' },
+                  quotes.map((entry) => h('span', { key: entry.id, className: 'cw-quote-chip', title: entry.text },
+                    h(Icon, { name: 'quote', size: 12 }),
+                    h('span', { className: 'cw-quote-chip-text' },
+                      (entry.role === 'user' ? '你：' : '回复：')
+                      + String(entry.text || '').replace(/\s+/g, ' ').trim().slice(0, 60)
+                      + (String(entry.text || '').length > 60 ? '…' : '')),
+                    h('button', {
+                      type: 'button',
+                      className: 'cw-quote-x',
+                      title: '移除这段引用',
+                      'aria-label': '移除这段引用',
+                      onClick: () => setQuotes((current) => current.filter((item) => item.id !== entry.id)),
+                    }, h(Icon, { name: 'x', size: 10 })),
+                  )),
+                  h('button', { type: 'button', className: 'cw-quote-clear', onClick: () => setQuotes([]) }, '清空'),
+                ) : null,
                 attachments.length ? h('div', { className: 'cw-attachrail' }, attachments.map((item) => (
                   item.kind === 'image'
                     ? h('div', { key: item.id, className: 'cw-attach-img' },
@@ -6088,6 +6285,18 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           onCancel: () => { if (!wsRename.busy) setWsRename(null); },
           onConfirm: submitWsRename,
         }) : null,
+        /* 选中正文后浮出的「引用」：点一下变成输入框上方的一颗 chip。
+           onMouseDown 里 preventDefault 保住选区（虽然按钮只读已存下的文字），
+           视觉上也不会闪一下就把选中态清掉。 */
+        quoteSel ? h('button', {
+          type: 'button',
+          className: 'cw-quotebtn',
+          style: { left: quoteSel.x + 'px', top: quoteSel.y + 'px' },
+          title: '引用这段文字',
+          'aria-label': '引用这段文字',
+          onMouseDown: (event) => event.preventDefault(),
+          onClick: addQuote,
+        }, h(Icon, { name: 'quote', size: 12 }), '引用') : null,
         toast ? h('div', { className: 'cw-toast' },
           h('span', null, toast.text),
           toast.action ? h('button', { onClick: () => { toast.action.onClick(); setToast(null); } }, toast.action.label) : null,
