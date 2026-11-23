@@ -575,6 +575,26 @@ function attachmentNote(attachments, options) {
   return '\n\n【附件】已保存到本机，需要内容时直接读取对应路径：\n' + rows.join('\n');
 }
 
+/**
+ * Claude Code 自己存会话记录的地方：<配置目录>/projects/<工作目录编码>/<会话 id>.jsonl。
+ * 配置目录默认 ~/.claude，可以用 CLAUDE_CONFIG_DIR 改。删会话时要把这里也删掉，
+ * 否则工作台里删了、`claude --resume` 里还躺着，C 盘也一直占着。
+ */
+function claudeProjectsDir() {
+  const base = text(process.env.CLAUDE_CONFIG_DIR).trim() || path.join(os.homedir(), '.claude');
+  return path.join(base, 'projects');
+}
+
+/**
+ * Codex 的线程 id 是 UUID。拼进 cmd.exe 命令行时**不要加引号**：`codex.cmd`
+ * 会把引号一起当成参数内容（实测 archive 报 `matching '"<uuid>"'`，
+ * delete --force 报「requires a session UUID」）。这里只放行裸 UUID。
+ */
+function codexSessionArg(input) {
+  const value = text(input);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : '';
+}
+
 class Workbench {
   constructor(ctx) {
     this.ctx = ctx;
@@ -1596,14 +1616,14 @@ class Workbench {
       // 归档时间：界面按它排序和分层（「今天刚归档」不该掉进「更早」）。
       // 原来 Host 从不写这个字段，客户端只能退回 updatedAt，排序就失真了。
       session.archivedAt = body.archived ? now() : null;
-      const native = session.provider === 'codex' && Boolean(session.codexThreadId);
+      const native = session.provider === 'codex' && Boolean(codexSessionArg(session.codexThreadId));
       if (body.archived) {
         session.archivedKind = native ? '原生归档 · codex archive' : '软归档 · CLI resume 仍可见';
         if (native) {
           // 原生命令可能根本不存在（旧版 Codex）或执行失败。原来 .catch(() => {}) 吞掉，
           // 界面却照旧写「原生归档」。这里按真实结果回填，失败就说清楚是软归档。
-          const thread = session.codexThreadId;
-          run('codex archive "' + thread + '"').then((result) => {
+          const thread = codexSessionArg(session.codexThreadId);
+          run('codex archive ' + thread).then((result) => {
             if (result && result.code === 0) return;
             session.archivedKind = '软归档 · 原生命令失败';
             session.advisories = (Array.isArray(session.advisories) ? session.advisories : [])
@@ -1619,8 +1639,8 @@ class Workbench {
       } else {
         session.archivedKind = '';
         if (native) {
-          const thread = session.codexThreadId;
-          run('codex unarchive "' + thread + '"').then((result) => {
+          const thread = codexSessionArg(session.codexThreadId);
+          run('codex unarchive ' + thread).then((result) => {
             if (result && result.code === 0) return;
             session.advisories = (Array.isArray(session.advisories) ? session.advisories : [])
               .concat([{ kind: 'archive', text: 'codex unarchive 未成功：' + oneLine(text(result && result.stderr) || '无输出', 160), at: now() }])
@@ -1645,8 +1665,27 @@ class Workbench {
       this.procs.delete(session.id);
     }
     try { rmSync(path.join(this.mcpDir, session.id + '.mcp.json'), { force: true }); } catch { /* ignore */ }
+    // CLI 自己的记录也要真删，否则「删会话」只删了工作台的索引，C 盘上还留着。
+    if (session.provider === 'claude' && session.claudeSessionId) {
+      try { this.removeClaudeTranscript(session.claudeSessionId); } catch { /* ignore */ }
+    }
     if (session.provider === 'codex' && session.codexThreadId) {
-      run('codex delete "' + session.codexThreadId + '"').catch(() => {});
+      const thread = codexSessionArg(session.codexThreadId);
+      /* 非交互环境里 `codex delete` 必须带 --force：不带只会报
+         「cannot confirm session deletion without an interactive terminal」，
+         然后 rollout 文件一直留着（同一个坑也让 C 盘慢慢变大）。
+         也不要给 id 套引号：经 cmd.exe 调 npm 的 codex.cmd 时，引号会被
+         二次解析掉，codex 收到的就不是 UUID 了（实测报「--force requires a
+         session UUID」）。UUID 本身没有空格，裸放最稳。 */
+      if (thread) {
+        run('codex delete --force ' + thread).then((result) => {
+          if (result.code !== 0) {
+            this.logOperation('session.cli-delete-failed', {
+              provider: 'codex', thread, detail: oneLine(result.stderr || result.stdout, 200),
+            });
+          }
+        });
+      }
     }
     this.sessions.delete(session.id);
     // 会话文件立刻删除，不等下一次延迟写盘（否则期间崩溃会让它「复活」）
@@ -2350,6 +2389,33 @@ class Workbench {
       });
     }
     return saved;
+  }
+
+  /**
+   * 删除 Claude Code 的会话记录（<projects>/<cwd 编码>/<id>.jsonl 与同名 tool-results 目录）。
+   *
+   * 为什么必须自己删：Claude Code 没有「删除某个会话」的命令，记录就是磁盘上的
+   * jsonl 文件；工作台只删自己的索引的话，`claude --resume` 仍能翻出来，文件也
+   * 一直留在 C 盘。删的时候按会话 id 精确匹配，不碰别的会话。
+   */
+  removeClaudeTranscript(claudeSessionId) {
+    const id = text(claudeSessionId);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return false;
+    let projects;
+    try { projects = readdirSync(claudeProjectsDir(), { withFileTypes: true }); } catch { return false; }
+    let removed = false;
+    for (const project of projects) {
+      if (!project.isDirectory()) continue;
+      const dir = path.join(claudeProjectsDir(), project.name);
+      try {
+        const transcript = path.join(dir, id + '.jsonl');
+        if (existsSync(transcript)) { rmSync(transcript, { force: true }); removed = true; }
+        // 同一会话的工具结果（Read/搜索的原始输出）单独放在同名目录里
+        const sidecar = path.join(dir, id);
+        if (existsSync(sidecar)) { rmSync(sidecar, { recursive: true, force: true }); removed = true; }
+      } catch { /* 文件被占用不影响删除工作台会话 */ }
+    }
+    return removed;
   }
 
   async send(session, content, attachments = []) {

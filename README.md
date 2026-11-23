@@ -178,7 +178,7 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 
 DSH 的插件页只对「插件市场条目」和「npm 包」检查版本，从仓库地址装的插件它不会提示。
 所以插件自己查：打开 **设置 → CLI 版本与升级**，第一行就是「CLI 工作台」本身的版本，
-有新版本时显示 `当前 v1.0.39 → v1.0.40`。
+有新版本时显示 `当前 v1.0.40 → v1.0.41`。
 
 - **点「立即升级」即可**：Host 会用当初那条安装命令把新版本装上，装完提示重启 DSH；
 - 也可以手动重跑安装命令，见「安装 → 之后的升级」；
@@ -212,6 +212,19 @@ DSH 的插件页只对「插件市场条目」和「npm 包」检查版本，从
 这里只存**索引与界面状态**：对话本体始终在 CLI 自己的记录里
 （Claude：`~/.claude/projects`，Codex：`~/.codex/sessions`），所以这个目录即使丢了，
 对话也不会丢，在终端里 `claude --resume` 照样能接上。
+
+### 删除会话是真删
+
+在工作台里删除一个会话时，CLI 自己的记录也会一起删掉，不会只在列表里消失：
+
+| CLI | 记录在哪 | 删除方式 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<目录编码>/<会话 id>.jsonl`（+ 同名 `tool-results/` 目录） | CLI 没有删除命令，直接按会话 id 精确删这两个 |
+| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*-<线程 id>.jsonl`（归档的在 `archived_sessions/`） | `codex delete --force <uuid>`（非交互环境必须带 `--force`，否则它只会报「需要交互终端确认」） |
+
+**归档 ≠ 删除**：归档只是从列表收起来，CLI 的记录仍然保留，随时可以用 `claude --resume` / `codex resume` 接上。
+
+两个 CLI 自己也有清理策略：Claude Code 默认只保留 **30 天**的转录（`cleanupPeriodDays`，可在 `~/.claude/settings.json` 调整）；Codex 没有对应的自动清理，所以工作台删除时会主动删。以本机为例，60 个 Claude 转录约 11.5MB、64 个 Codex rollout 约 7.3MB——单条会话通常几百 KB 到 1MB 出头，长期不清理才会明显涨。
 
 它**不**写 `~/.claude/settings.json`、`~/.codex/config.toml`，也不配置 API Key、Base URL 或代理——那些仍然是你 CLI 自己的事。
 

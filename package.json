@@ -1,6 +1,6 @@
 {
   "name": "dsh-cli-workbench",
-  "version": "1.0.39",
+  "version": "1.0.40",
   "description": "Turns the locally installed Claude Code and Codex CLIs into a three-column GUI workbench inside DeepSeek Harness.",
   "keywords": [
     "deepseek-harness",

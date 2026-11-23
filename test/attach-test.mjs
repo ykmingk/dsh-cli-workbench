@@ -154,6 +154,8 @@ ok('拖进来的文件只带路径', clientSrc.includes('const path = isImage ? 
 ok('文件夹卡片用文件夹图标', clientSrc.includes("item.kind === 'dir' ? 'folder' : 'file'"));
 ok('客户端有圆形 + 按钮', clientSrc.includes("className: 'cw-add'") && clientSrc.includes("name: 'plus'"));
 ok('客户端有隐藏的文件选择器', clientSrc.includes("ref: fileInputRef") && clientSrc.includes("type: 'file'"));
+ok('文件选择先拷贝再清空输入框', clientSrc.includes('const list = Array.from(event.target.files || []);')
+  && clientSrc.indexOf('const list = Array.from(event.target.files || []);') < clientSrc.indexOf("event.target.value = '';"));
 ok('附件按会话分开存', clientSrc.includes('const [attachMap, setAttachMap] = useState({})'));
 ok('发送时带上附件', clientSrc.includes('attachments: wireAttachments(attachments)'));
 ok('只有附件也能发', clientSrc.includes('!draft.trim() && attachments.length === 0'));

@@ -5710,7 +5710,10 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                       multiple: true,
                       hidden: true,
                       onChange: (event) => {
-                        const list = event.target.files;
+                        /* 必须先拷成数组再清空：`input.value = ''` 会同步清掉
+                           FileList（它是活对象），直接传 event.target.files 会变成空列表，
+                           表现就是「对话框选了文件但输入框里什么都没出现」。 */
+                        const list = Array.from(event.target.files || []);
                         event.target.value = '';
                         addFiles(list);
                       },
