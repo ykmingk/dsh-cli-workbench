@@ -87,20 +87,19 @@ window.__ModuleLoader__.load({
       return out;
     };
 
-    /** 造一枚内联引用块（只在浏览器里有 document 时用到）。 */
+    /**
+     * 造一枚内联引用块（只在浏览器里有 document 时用到）。
+     * 只有引文本身、不带引号前缀——DSH 的引用就是一段变色文字。
+     */
     const createQuoteChip = (text) => {
       const chip = document.createElement('span');
       chip.className = 'cw-editor-quote';
       chip.setAttribute('contenteditable', 'false');
       chip.setAttribute('data-quote', text);
       chip.title = text;
-      const mark = document.createElement('span');
-      mark.className = 'cw-editor-quote-mark';
-      mark.textContent = '\u201c';
       const body = document.createElement('span');
       body.className = 'cw-editor-quote-text';
       body.textContent = text;
-      chip.appendChild(mark);
       chip.appendChild(body);
       return chip;
     };
@@ -127,8 +126,9 @@ window.__ModuleLoader__.load({
     const quoteButtonBox = (rects, box, viewportWidth) => {
       const list = (rects || []).filter((rect) => rect && (rect.width > 1 || rect.height > 1));
       if (!list.length) return null;
-      const width = 68;
-      const height = 28;
+      /* 与 CSS 里的药丸尺寸保持一致（实测 78x30，字号 12px 的「引用文本」） */
+      const width = 78;
+      const height = 30;
       const gap = 6;
       const first = list[0];
       const top = Math.min(...list.map((rect) => rect.top));
@@ -964,16 +964,17 @@ window.__ModuleLoader__.load({
 .cw-quote-block:last-child{ margin-bottom: 0; }
 .cw-quote-line{ white-space: pre-wrap; }
 .cw-plain-block{ white-space: pre-wrap; }
-/* 选区浮动按钮：定位用视口坐标（getBoundingClientRect），所以是 fixed。 */
+/* 选区浮动按钮：定位用视口坐标（getBoundingClientRect），所以是 fixed。
+   形制照 DSH 那颗：白色药丸、只有「引用文本」四个字，没有图标。 */
 .cw-quotebtn{
-  position: fixed; z-index: 96; height: 28px; padding: 0 9px 0 7px;
-  display: inline-flex; align-items: center; gap: 4px;
-  border: .5px solid var(--cw-border-2); border-radius: var(--cw-radius-sm);
+  position: fixed; z-index: 96; height: 30px; padding: 0 14px;
+  display: inline-flex; align-items: center;
+  border: .5px solid var(--cw-border-2); border-radius: 999px;
   /* 必须是不透明底：按钮浮在正文上，--cw-hover 那种半透明 token 会让后面的
      文字透出来（鼠标移上去像「变透明」）。DSH 那颗也是实心白底。 */
   background: var(--dsw-alias-bg-layer-1, var(--cw-bg)); color: var(--cw-text);
   font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); white-space: nowrap;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
 }
 /* 悬停/按下都用 -solid 版（不透明）：普通 -hover / -active 是 8%~10% 透明度的
    叠加色，浮在正文上时会让文字透出来。 */
@@ -1273,14 +1274,13 @@ window.__ModuleLoader__.load({
   white-space: pre-wrap; word-break: break-word;
 }
 .cw-editor:empty::before{ content: attr(data-placeholder); color: var(--cw-placeholder); pointer-events: none; }
-/* 内联引用块：照 DSH 的样子——“ + 引文用链接蓝，没有底色/边框，后面直接接
-   用户自己的文字（正常正文色）。太长就单行省略号截断。
+/* 内联引用块：照 DSH 的样子——只有引文本身、用链接蓝，没有引号前缀、没有
+   底色/边框，后面直接接用户自己的文字（正常正文色）。太长就单行省略号截断。
    注意：这段 CSS 在 String.raw 模板里，注释里不能出现反引号或美元花括号。 */
 .cw-editor-quote{
-  display: inline-flex; align-items: baseline; gap: 3px; max-width: min(78%, 520px);
+  display: inline-flex; align-items: baseline; max-width: min(78%, 520px);
   margin-right: 3px; color: var(--dsw-alias-link, var(--cw-running));
 }
-.cw-editor-quote-mark{ flex: none; color: inherit; line-height: 1; }
 .cw-editor-quote-text{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 底部行至少 34px（发送键高度），且不被 flex 压缩——否则圆角卡会把它裁掉一截。 */
 .cw-input-foot{ flex: none; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 0 0 2px; }
@@ -6575,7 +6575,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           'aria-label': '引用这段文字',
           onMouseDown: (event) => event.preventDefault(),
           onClick: addQuote,
-        }, h(Icon, { name: 'quote', size: 12 }), '引用') : null,
+        }, '引用文本') : null,
         toast ? h('div', { className: 'cw-toast' },
           h('span', null, toast.text),
           toast.action ? h('button', { onClick: () => { toast.action.onClick(); setToast(null); } }, toast.action.label) : null,

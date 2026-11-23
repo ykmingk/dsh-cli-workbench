@@ -43,21 +43,21 @@ console.log('\n[0] 引用按钮落在哪（多行选区也不能飘到空白处�
   const line = (left, right, top, height = 20) => ({ left, right, top, bottom: top + height, width: right - left, height });
 
   const single = place([line(100, 300, 200)], box, 1200);
-  ok('单行：贴在选区上方 6px', single.y === 200 - 6 - 28, JSON.stringify(single));
-  ok('单行：横向贴右沿', single.x === 300 - 68, JSON.stringify(single));
+  ok('单行：贴在选区上方 6px', single.y === 200 - 6 - 30, JSON.stringify(single));
+  ok('单行：横向贴右沿', single.x === 300 - 78, JSON.stringify(single));
   ok('单行：标记为 above', single.placement === 'above');
 
   /* 多行、各行长短不一：旧算法用包围盒中心（这里会是 (50+400)/2-34=191），
     新算法贴**第一行**的右沿 400-68=332，纵向压在第一行上方。 */
   const multi = place([line(50, 400, 200), line(50, 150, 220)], box, 1200);
-  ok('多行：压在最上面一行的上方（不遮住已选中的行）', multi.y === 200 - 6 - 28, JSON.stringify(multi));
-  ok('多行：横向贴第一行的右沿', multi.x === 400 - 68, JSON.stringify(multi));
-  ok('多行：按钮不会压到选区', multi.y + 28 <= 200);
+  ok('多行：压在最上面一行的上方（不遮住已选中的行）', multi.y === 200 - 6 - 30, JSON.stringify(multi));
+  ok('多行：横向贴第一行的右沿', multi.x === 400 - 78, JSON.stringify(multi));
+  ok('多行：按钮不会压到选区', multi.y + 30 <= 200);
 
   /* 第一行很短、后面一行很长：不能贴到长那行的右沿（那样离第一行文字很远） */
   const shortFirst = place([line(50, 200, 200), line(50, 700, 220)], box, 1200);
-  ok('第一行短时不跟去长那行的右沿', shortFirst.x === 200 - 68, JSON.stringify(shortFirst));
-  ok('第一行短时仍然贴着文字', shortFirst.y + 28 <= 200 && shortFirst.x + 68 >= 50);
+  ok('第一行短时不跟去长那行的右沿', shortFirst.x === 200 - 78, JSON.stringify(shortFirst));
+  ok('第一行短时仍然贴着文字', shortFirst.y + 30 <= 200 && shortFirst.x + 78 >= 50);
 
   /* 选区靠近对话区顶部：翻到下面 */
   const nearTop = place([line(50, 300, 112)], box, 1200);
@@ -65,13 +65,13 @@ console.log('\n[0] 引用按钮落在哪（多行选区也不能飘到空白处�
 
   /* 边界夹紧：右沿再往右就会顶出对话区（800-68-8=724） */
   const tooRight = place([line(600, 799, 300)], box, 1200);
-  ok('太靠右时夹在对话区内', tooRight.x === 800 - 68 - 8, JSON.stringify(tooRight));
+  ok('太靠右时夹在对话区内', tooRight.x === 800 - 78 - 8, JSON.stringify(tooRight));
   const tooLeft = place([line(10, 40, 300)], box, 1200);
   ok('太靠左时留 8px', tooLeft.x === 8, JSON.stringify(tooLeft));
 
   /* 没有容器时按视口宽度夹（900-68-8=824） */
   const noBox = place([line(600, 899, 300)], null, 900);
-  ok('拿不到容器时按视口宽度夹', noBox.x === 900 - 68 - 8, JSON.stringify(noBox));
+  ok('拿不到容器时按视口宽度夹', noBox.x === 900 - 78 - 8, JSON.stringify(noBox));
 
   ok('空矩形返回 null', place([], box, 1200) === null);
   ok('全是零尺寸的矩形也返回 null', place([{ left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }], box, 1200) === null);
@@ -174,6 +174,10 @@ console.log('\n[4] 接线：contenteditable 输入框 + 内联引用块');
   ok('重画时把引用画成小块', srcClient.includes('editor.appendChild(createQuoteChip(segment.text))'));
   ok('引用块是不可编辑的原子节点', srcClient.includes("chip.setAttribute('contenteditable', 'false')")
     && srcClient.includes("chip.setAttribute('data-quote', text)"));
+  /* DSH 的引用就是一段变色文字：没有引号前缀、没有图标 */
+  ok('引用块不带引号前缀', !srcClient.includes('cw-editor-quote-mark') && !srcClient.includes("'\u201c'"));
+  ok('浮动按钮是「引用文本」药丸（无图标）', srcClient.includes("}, '引用文本') : null")
+    && /\.cw-quotebtn\{[^}]*border-radius:\s*999px/.test(srcClient));
   ok('引用插在光标处（不是只拼字符串）', srcClient.includes('range.insertNode(chip)'));
   ok('插入后光标落在引用后面', srcClient.includes('range.setStartAfter(space)'));
   ok('没有 DOM 时退回字符串插入', srcClient.includes('insertQuoteText(draft, text, draft.length)'));
