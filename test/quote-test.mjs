@@ -33,6 +33,51 @@ const sliceBlock = (text, marker) => {
   return null;
 };
 
+/* —— 浮动按钮的位置：贴住文字，不贴包围盒中心 —— */
+console.log('\n[0] 引用按钮落在哪（多行选区也不能飘到空白处）');
+{
+  const block = sliceBlock(srcClient, 'const quoteButtonBox = (rects, box, viewportWidth) => {');
+  ok('抽到 quoteButtonBox', Boolean(block));
+  const place = new Function(block + '\n return quoteButtonBox;')();
+  const box = { left: 0, right: 800, top: 100, bottom: 600 };
+  const line = (left, right, top, height = 20) => ({ left, right, top, bottom: top + height, width: right - left, height });
+
+  const single = place([line(100, 300, 200)], box, 1200);
+  ok('单行：贴在选区上方 6px', single.y === 200 - 6 - 28, JSON.stringify(single));
+  ok('单行：横向贴右沿', single.x === 300 - 68, JSON.stringify(single));
+  ok('单行：标记为 above', single.placement === 'above');
+
+  /* 多行、各行长短不一：旧算法用包围盒中心（这里会是 (50+400)/2-34=191），
+    新算法贴**第一行**的右沿 400-68=332，纵向压在第一行上方。 */
+  const multi = place([line(50, 400, 200), line(50, 150, 220)], box, 1200);
+  ok('多行：压在最上面一行的上方（不遮住已选中的行）', multi.y === 200 - 6 - 28, JSON.stringify(multi));
+  ok('多行：横向贴第一行的右沿', multi.x === 400 - 68, JSON.stringify(multi));
+  ok('多行：按钮不会压到选区', multi.y + 28 <= 200);
+
+  /* 第一行很短、后面一行很长：不能贴到长那行的右沿（那样离第一行文字很远） */
+  const shortFirst = place([line(50, 200, 200), line(50, 700, 220)], box, 1200);
+  ok('第一行短时不跟去长那行的右沿', shortFirst.x === 200 - 68, JSON.stringify(shortFirst));
+  ok('第一行短时仍然贴着文字', shortFirst.y + 28 <= 200 && shortFirst.x + 68 >= 50);
+
+  /* 选区靠近对话区顶部：翻到下面 */
+  const nearTop = place([line(50, 300, 112)], box, 1200);
+  ok('上方空间不够就翻到选区下面', nearTop.placement === 'below' && nearTop.y === 132 + 6, JSON.stringify(nearTop));
+
+  /* 边界夹紧：右沿再往右就会顶出对话区（800-68-8=724） */
+  const tooRight = place([line(600, 799, 300)], box, 1200);
+  ok('太靠右时夹在对话区内', tooRight.x === 800 - 68 - 8, JSON.stringify(tooRight));
+  const tooLeft = place([line(10, 40, 300)], box, 1200);
+  ok('太靠左时留 8px', tooLeft.x === 8, JSON.stringify(tooLeft));
+
+  /* 没有容器时按视口宽度夹（900-68-8=824） */
+  const noBox = place([line(600, 899, 300)], null, 900);
+  ok('拿不到容器时按视口宽度夹', noBox.x === 900 - 68 - 8, JSON.stringify(noBox));
+
+  ok('空矩形返回 null', place([], box, 1200) === null);
+  ok('全是零尺寸的矩形也返回 null', place([{ left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }], box, 1200) === null);
+  ok('空矩形数组不炸', place(null, box, 1200) === null);
+}
+
 /* —— 草稿 ↔ 编辑器 —— */
 console.log('\n[1] 草稿与编辑器 DOM 之间的往返');
 {
@@ -138,8 +183,13 @@ console.log('\n[4] 接线：contenteditable 输入框 + 内联引用块');
   ok('IME 合成期间不误发', srcClient.includes('isComposing'));
   ok('上限仍是 2000 字', /QUOTE_MAX_CHARS = 2000/.test(srcClient));
   ok('选区只认同一条 .cw-msg', srcClient.includes("startEl.closest('.cw-msg')") && srcClient.includes('startMsg !== endMsg'));
-  ok('浮动按钮 fixed + 边界夹紧 + 滚动收起', srcClient.includes('position: fixed')
-    && srcClient.includes('window.innerWidth - 76') && srcClient.includes('if (quoteSel) setQuoteSel(null)'));
+  ok('浮动按钮 fixed + 贴选区定位 + 滚动收起', srcClient.includes('position: fixed')
+    && srcClient.includes('quoteButtonBox(rects, box, window.innerWidth)')
+    && srcClient.includes("range.getClientRects()")
+    && srcClient.includes('if (quoteSel) setQuoteSel(null)'));
+  /* 位置不能再来自包围盒：那样多行选区会飘到首行右侧的空白上 */
+  ok('定位不再用 getBoundingClientRect 的中心', !srcClient.includes('rect.width / 2 - 34')
+    && !srcClient.includes('window.innerWidth - 76'));
   ok('气泡里有内联引用样式', srcClient.includes('.cw-quote-inline{'));
   ok('引用块的样式（单行截断的小块）', srcClient.includes('.cw-editor-quote{') && srcClient.includes('text-overflow: ellipsis'));
   /* 形状照 DSH 截图：链接蓝、无底色无边框，后面直接接用户文字 */

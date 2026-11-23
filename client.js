@@ -104,6 +104,53 @@ window.__ModuleLoader__.load({
       chip.appendChild(body);
       return chip;
     };
+    /**
+     * 选区 → 浮动「引用」按钮的位置。
+     *
+     * 关键：**不要用包围盒中心**。多行选区的包围盒是「所有行并起来的大方块」，
+     * 它的中心常常落在某一行右侧的空白里，按钮看起来就离文字很远（而且忽远忽近，
+     * 因为每段选中文字的宽度分布不同）。
+     *
+     * 改成用 `getClientRects()` 的逐行矩形：
+     *   - 纵向贴**第一行**的上沿（多行选区也是压在选区顶上，不遮住已选中的行）；
+     *   - 横向贴**第一行的右沿**（那一行文字在哪结束，按钮就贴在哪）；
+     *   - 上方放不下（选区接近视口顶）就翻到选区下面；
+     *   - 最后夹进对话区，别飘到右栏上。
+     *
+     * 为什么不用「最右一行的右沿」：选区里有很长的一行时，按钮会被推到那片空白
+     * 的正上方，离第一行文字很远——实测距离 30px，而贴第一行只有 6px。
+     *
+     * @param rects 选区的逐行矩形（getClientRects 的结果）
+     * @param box 对话滚动区的矩形（可空：拿不到就按视口算）
+     * @param viewportWidth 视口宽度（box 为空时的右边界）
+     */
+    const quoteButtonBox = (rects, box, viewportWidth) => {
+      const list = (rects || []).filter((rect) => rect && (rect.width > 1 || rect.height > 1));
+      if (!list.length) return null;
+      const width = 68;
+      const height = 28;
+      const gap = 6;
+      const first = list[0];
+      const top = Math.min(...list.map((rect) => rect.top));
+      const bottom = Math.max(...list.map((rect) => rect.bottom));
+      const anchorRight = Number.isFinite(first.right) ? first.right : Math.max(...list.map((rect) => rect.right));
+      const boundLeft = box && Number.isFinite(box.left) ? box.left : 0;
+      const boundRight = box && Number.isFinite(box.right) ? box.right : (Number(viewportWidth) || 0);
+      const boundTop = box && Number.isFinite(box.top) ? box.top : 0;
+      const minX = boundLeft + 8;
+      const maxX = Math.max(minX, boundRight - width - 8);
+      /* 横向：贴第一行文字的右沿（那一行结束的地方），再夹进对话区。 */
+      const x = Math.round(Math.min(Math.max(minX, anchorRight - width), maxX));
+      /* 纵向：优先压在选区上方；上方不够就翻到下方。 */
+      const above = top - gap - height;
+      const fitsAbove = above >= boundTop + 4;
+      return {
+        x,
+        y: Math.round(fitsAbove ? above : bottom + gap),
+        placement: fitsAbove ? 'above' : 'below',
+      };
+    };
+
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -4958,17 +5005,23 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         const startMsg = startEl && startEl.closest ? startEl.closest('.cw-msg') : null;
         const endMsg = endEl && endEl.closest ? endEl.closest('.cw-msg') : null;
         if (!startMsg || startMsg !== endMsg) { setQuoteSel(null); return; }
-        const rect = range.getBoundingClientRect();
-        if (!rect || (!rect.width && !rect.height)) { setQuoteSel(null); return; }
+        /* 逐行矩形：包围盒中心会落到空白处，按钮就离文字很远（见 quoteButtonBox） */
+        const rects = typeof range.getClientRects === 'function'
+          ? Array.from(range.getClientRects())
+          : [range.getBoundingClientRect()];
+        const box = scrollRef.current && scrollRef.current.getBoundingClientRect
+          ? scrollRef.current.getBoundingClientRect()
+          : null;
+        const spot = quoteButtonBox(rects, box, window.innerWidth);
+        if (!spot) { setQuoteSel(null); return; }
         const clipped = text.length > QUOTE_MAX_CHARS;
-        const below = rect.top < 52;
         setQuoteSel({
           text: clipped ? text.slice(0, QUOTE_MAX_CHARS) : text,
           clipped,
           role: startMsg.classList.contains('cw-msg-user') ? 'user' : 'assistant',
           itemId: startMsg.getAttribute('data-msg') || '',
-          x: Math.min(Math.max(8, rect.left + rect.width / 2 - 34), Math.max(8, window.innerWidth - 76)),
-          y: below ? Math.min(rect.bottom + 6, window.innerHeight - 36) : Math.max(8, rect.top - 36),
+          x: spot.x,
+          y: spot.y,
         });
       };
 
