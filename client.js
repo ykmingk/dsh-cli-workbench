@@ -822,7 +822,8 @@ window.__ModuleLoader__.load({
   white-space: pre-wrap; word-break: break-word;
 }
 /* 引用的原文：进消息后以引用块呈现（左侧竖线 + 弱化色），其余仍是纯文本。
-   只认行首 `> `——不给用户气泡上完整 Markdown，免得用户写的 `*` 变成斜体。 */
+   只认行首的「> 」——不给用户气泡上完整 Markdown，免得用户写的 * 变成斜体。
+   注意：这段 CSS 在 String.raw 模板里，注释里不能写反引号或美元花括号，否则模板会被提前截断。 */
 .cw-quote-block{
   margin: 0 0 8px; padding: 1px 0 1px 10px;
   border-left: 2px solid var(--cw-border-4, var(--cw-border-2));
