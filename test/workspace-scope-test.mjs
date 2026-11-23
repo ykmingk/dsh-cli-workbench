@@ -102,6 +102,13 @@ const removedD = wb.removeWorkspace.call(d, dirA, 'claude');
 ok('老数据缺 hiddenFor 也能隐藏', removedD.hidden === true
   && JSON.stringify(d.workspaces.get(dirA.toLowerCase()).hiddenFor) === '["claude"]');
 
+/* 两侧各移除一次：不能留下一条「两侧都不可见」的僵尸登记（界面上再也点不到） */
+const e = make();
+wb.removeWorkspace.call(e, dirA, 'claude');
+const removedE = wb.removeWorkspace.call(e, dirA, 'codex');
+ok('两侧都移除过时整条删掉，不留僵尸', removedE && removedE.hidden === false
+  && !e.workspaces.has(dirA.toLowerCase()));
+
 /* —— 客户端接线 —— */
 ok('左栏按 hiddenFor 过滤当前助手', clientSrc.includes('entry.hiddenFor.includes(provider)'));
 ok('删除请求带 provider', clientSrc.includes("'&provider=' + encodeURIComponent(wsDelete.provider)"));

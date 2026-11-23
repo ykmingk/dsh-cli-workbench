@@ -84,7 +84,12 @@ ok('P2-4 批量删除逐条 try', srcClient.includes("catch (error) { failed.pus
 
 // P2-5 首条消息失败回填草稿
 ok('P2-5 建会话失败回填草稿', srcClient.includes('if (!created) {') && srcClient.includes('setDraft(composed);'));
-ok('P2-5 首条消息失败回填草稿', srcClient.includes('setDraft(prompt);'));
+ok('P2-5 首条消息失败回填草稿', srcClient.includes('setDraftFor(result.session.id, prompt);'));
+/* 1.0.45：回填要落到「新会话」的草稿位，而不是新建态那个键——否则界面已切到新会话，
+   用户看到的是空输入框（文字和附件都像被吞了）。附件同样要还回去。 */
+ok('P2-5 回填到新会话的草稿槽位', srcClient.includes('const setDraftFor = (key, value)'));
+ok('P2-5 首条消息失败也回填附件',
+  srcClient.includes('setAttachMap((current) => ({ ...current, [result.session.id]: promptAttachments }))'));
 
 // P2-6 内联组件改渲染函数
 ok('P2-6 浮层改用渲染函数（不再创建新组件类型）',

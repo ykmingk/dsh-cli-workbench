@@ -160,6 +160,14 @@ ok('附件按会话分开存', clientSrc.includes('const [attachMap, setAttachMa
 ok('发送时带上附件', clientSrc.includes('attachments: wireAttachments(attachments)'));
 ok('只有附件也能发', clientSrc.includes('!draft.trim() && attachments.length === 0'));
 ok('聊天记录里回放图片', clientSrc.includes("'/attachment?session='"));
+/* 客户端与服务端同一套合计上限：条目按图片+文件一起数，上传体积 24MB。
+   以前客户端只卡「图片 10 张」，9 图 + 2 文件要等发送时才被服务端 400。 */
+ok('客户端认条目上限', /ATTACH_MAX_ITEMS = (\d+)/.test(clientSrc) && clientSrc.includes('count >= ATTACH_MAX_ITEMS'));
+ok('客户端认上传合计上限', clientSrc.includes('ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024')
+  && clientSrc.includes('uploadedBytes + file.size > ATTACH_MAX_TOTAL_BYTES'));
+ok('发送前再兜一层上限', clientSrc.includes('if (attachments.length > ATTACH_MAX_ITEMS)')
+  && clientSrc.includes('if (uploadBytes > ATTACH_MAX_TOTAL_BYTES)'));
+ok('服务端 413 不再写死 4MB', !src.includes('请求体超过 4MB') && src.includes('一次发送的内容太多，请分批发送'));
 ok('附件按钮是 DSH 的圆形态', /\.cw-add\{[^}]*border-radius:\s*999px/.test(clientSrc) && clientSrc.includes('var(--dsw-specific-selector'));
 
 /* —— 两个适配器的附件通道 —— */

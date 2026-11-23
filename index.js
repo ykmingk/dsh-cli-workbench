@@ -1091,6 +1091,10 @@ class Workbench {
    * `provider` 传入且**另一个助手**在这个目录里还有会话时，不删全局登记，
    * 只把这一侧记进 hiddenFor：另一侧的会话继续按工作区分组（同一个目录被
    * 两个助手同时使用是常见场景，删一侧不该把另一侧打散）。
+   *
+   * 例外：如果另一侧**也**早就从自己那侧移除过（hiddenFor 已经含着它），
+   * 再记一次会让这条登记两侧都不可见——留在 state.json 里既没人看得到、界面上
+   * 也没有入口能再删（只能靠在那个目录里新建会话自愈）。这种情况直接删整条。
    * @returns null（没有这个工作区）| { entry, hidden }
    */
   removeWorkspace(dir, provider) {
@@ -1103,9 +1107,12 @@ class Workbench {
         && (session.provider || 'claude') === other
         && String(session.cwd || '').toLowerCase() === entry.cwd.toLowerCase());
       if (otherInUse) {
-        entry.hiddenFor = Array.from(new Set([...(Array.isArray(entry.hiddenFor) ? entry.hiddenFor : []), provider]));
-        this.save();
-        return { entry, hidden: true };
+        const hidden = Array.from(new Set([...(Array.isArray(entry.hiddenFor) ? entry.hiddenFor : []), provider]));
+        if (hidden.length < 2) {
+          entry.hiddenFor = hidden;
+          this.save();
+          return { entry, hidden: true };
+        }
       }
     }
     this.workspaces.delete(entry.cwd.toLowerCase());
@@ -1275,9 +1282,11 @@ class Workbench {
       await this.route(req, res, url, route);
     } catch (error) {
       const message = String(error && error.message || error);
-      // 请求体超限是一个明确的客户端错误，别混成 500
+      // 请求体超限是一个明确的客户端错误，别混成 500。
+      // 上限按路由不同（普通请求 4MB、带附件的消息 40MB），所以只说「太大、分批发」，
+      // 不写一个会随路由变化的数字——写死 4MB 时，40MB 的附件消息会被误报。
       const status = message === 'body too large' ? 413 : 500;
-      try { json(res, status, { error: status === 413 ? '请求体超过 4MB' : message }); } catch { /* headers sent */ }
+      try { json(res, status, { error: status === 413 ? '一次发送的内容太多，请分批发送' : message }); } catch { /* headers sent */ }
     }
   }
 

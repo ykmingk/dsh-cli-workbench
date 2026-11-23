@@ -12,6 +12,11 @@ window.__ModuleLoader__.load({
     const ATTACH_MAX_IMAGES = 10;
     const ATTACH_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
     const ATTACH_MAX_FILE_BYTES = 20 * 1024 * 1024;
+    /* 与服务端同一套合计上限：条目按「图片 + 文件」一起数，体积只算真正上传的
+       字节（路径引用不复制，不占额度）。先在添加/发送时拦住，别等 40MB 请求体
+       上限把人挡回来。 */
+    const ATTACH_MAX_ITEMS = 10;
+    const ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -3988,6 +3993,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         if (next === previous) return current;
         return { ...current, [draftKey]: next };
       });
+      /* 指定槽位写草稿：首条消息失败时要把内容落到「刚建出来的那个会话」上，
+         而 setDraft 用的 draftKey 还是建会话之前的（新建态），写进去用户看不见。 */
+      const setDraftFor = (key, value) => setDrafts((current) => ({ ...current, [key]: value }));
       const [fileRef, setFileRef] = useState('');
       /* 已引用的技能：输入框里只留 `/名字` 短令牌，卡片显示名字，正文由 Host 补 */
       const [skillRefs, setSkillRefs] = useState([]);
@@ -4487,9 +4495,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                 body: JSON.stringify({ text: prompt, attachments: wireAttachments(promptAttachments) }),
               });
             } catch (error) {
-              // 会话建好了但首条消息没发出去：把内容放回输入框，别让用户重打一遍。
-              setDraft(prompt);
-              showToast('首条消息未发出，已放回输入框：' + error.message);
+              /* 会话建好了但首条消息没发出去：把文字与附件落到**这个新会话**的草稿位。
+                 以前写回 setDraft（旧 draftKey = 新建态），界面已经切到新会话，用户看到的是
+                 空白输入框——文字和附件都像被吞了。 */
+              setDraftFor(result.session.id, prompt);
+              setAttachMap((current) => ({ ...current, [result.session.id]: promptAttachments }));
+              showToast('首条消息未发出，文字与附件已放回输入框：' + error.message);
             }
           }
           return true;
@@ -4704,8 +4715,17 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         if (!files.length) return;
         const accepted = [];
         let imageCount = attachments.filter((item) => item.kind === 'image').length;
+        /* 条目数与上传体积（与服务端同一套）：添加时就拦住，别等下一条消息发出去才报错。 */
+        let count = attachments.length;
+        let uploadedBytes = attachments
+          .filter((item) => item.data)
+          .reduce((sum, item) => sum + (Number(item.size) || 0), 0);
         const nextId = () => 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
         for (const file of files) {
+          if (count >= ATTACH_MAX_ITEMS) {
+            showToast('一次最多附 ' + ATTACH_MAX_ITEMS + ' 个附件（图片与文件合计）');
+            break;
+          }
           const mediaType = String(file.type || '').toLowerCase();
           const isImage = ATTACH_IMAGE_TYPES.has(mediaType);
           const isDirectory = Boolean(directories && directories.has(file));
@@ -4719,6 +4739,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               id: nextId(), kind: 'dir', name: file.name || '文件夹',
               mediaType: '', size: 0, path, previewUrl: '',
             });
+            count += 1;
             continue;
           }
           if (isImage && imageCount >= ATTACH_MAX_IMAGES) {
@@ -4739,14 +4760,22 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               mediaType: mediaType || 'application/octet-stream',
               size: file.size, path, previewUrl: '',
             });
+            count += 1;
             continue;
           }
           if (file.size > ATTACH_MAX_FILE_BYTES) {
             showToast('「' + (file.name || '附件') + '」超过 ' + Math.round(ATTACH_MAX_FILE_BYTES / 1024 / 1024) + 'MB，没有添加');
             continue;
           }
+          /* 只有真正要上传字节的才占合计额度；超了就别读了，先把话说清楚。 */
+          if (uploadedBytes + file.size > ATTACH_MAX_TOTAL_BYTES) {
+            showToast('上传的附件合计不能超过 ' + Math.round(ATTACH_MAX_TOTAL_BYTES / 1024 / 1024) + 'MB，请分批发送');
+            break;
+          }
           try {
             const read = await readAttachment(file);
+            uploadedBytes += file.size;
+            count += 1;
             accepted.push({
               id: nextId(),
               kind: isImage ? 'image' : 'file',
@@ -4779,6 +4808,20 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       }));
 
       const send = async (override) => {
+        /* 附件上限在添加时已经拦过一次，这里再兜一层：路径引用的条目也在 10 个之内，
+           而上传体积要等真正发出去才算得准。宁可现在说清楚，也别让请求撞上 40MB 的
+           body 上限、只回一句「请求体过大」。 */
+        if (attachments.length > ATTACH_MAX_ITEMS) {
+          showToast('一次最多发 ' + ATTACH_MAX_ITEMS + ' 个附件（图片与文件合计）');
+          return;
+        }
+        const uploadBytes = attachments
+          .filter((item) => item.data)
+          .reduce((sum, item) => sum + (Number(item.size) || 0), 0);
+        if (uploadBytes > ATTACH_MAX_TOTAL_BYTES) {
+          showToast('上传的附件合计不能超过 ' + Math.round(ATTACH_MAX_TOTAL_BYTES / 1024 / 1024) + 'MB，请分批发送');
+          return;
+        }
         // 没有会话时直接发 = 用顶部选中的助手建一个会话，并把这句话作为第一句：
         // 不再跳一层「先新建会话」对话框（那正是「点新建却建出另一个 CLI」的来源）。
         if (!currentId || !viewSession) {
