@@ -1792,6 +1792,41 @@ button.cw-pill[aria-expanded="true"]{
 }
 .cw-dialog.narrow{ width: 450px; }
 
+/* —— 从 CLI 导入会话 —— */
+.cw-import{ width: 620px; }
+.cw-import-body{ padding: 14px 18px 18px; }
+.cw-import-empty{
+  padding: 26px 0; text-align: center; font-size: var(--cw-fs-sm); color: var(--cw-subtle);
+}
+.cw-import-list{ margin-top: 10px; }
+.cw-import-group + .cw-import-group{ margin-top: 12px; }
+.cw-import-grouphead{
+  display: flex; align-items: center; gap: 8px; padding: 0 2px 6px;
+  font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-subtle);
+}
+.cw-import-count{ margin-left: auto; font-variant-numeric: tabular-nums; }
+.cw-import-row{
+  display: flex; align-items: flex-start; gap: 9px; padding: 7px 9px; border-radius: var(--cw-radius-sm);
+  cursor: pointer; min-width: 0;
+}
+.cw-import-row:hover{ background: var(--cw-hover); }
+.cw-import-row.is-checked{ background: var(--cw-hover); }
+.cw-import-row.is-disabled{ cursor: default; opacity: .55; }
+.cw-import-row.is-disabled:hover{ background: transparent; }
+.cw-import-row input{ margin: 3px 0 0; flex: none; }
+.cw-import-main{ display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cw-import-title{
+  font-size: var(--cw-fs-sm); line-height: var(--cw-lh-sm); color: var(--cw-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cw-import-meta{
+  font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cw-import-foot{ justify-content: flex-end; }
+.cw-import-all{ margin-right: auto; }
+.cw-import-spacer{ flex: 1; }
+
 /* —— 自定义规则（CLAUDE.md / AGENTS.md）编辑器 —— */
 .cw-rules-dialog{ width: 720px; max-height: 84%; }
 .cw-rules-note{
@@ -1935,6 +1970,7 @@ button.cw-pill[aria-expanded="true"]{
   margin-top: 12px; padding: 10px 12px; border: .5px dashed var(--cw-border-3);
   border-radius: var(--cw-radius-md); font-size: var(--cw-fs-xs); color: var(--cw-subtle); line-height: 1.7;
 }
+.cw-set-actions{ margin-top: 10px; display: flex; align-items: center; gap: 8px; }
 .cw-empty-note{ text-align: center; padding: 24px 0; font-size: var(--cw-fs-sm); color: var(--cw-subtle); }
 /* 路径要能选中复制（排查「数据目录不对」时第一件事就是把它贴出来） */
 .cw-set-path{
@@ -3238,7 +3274,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       );
     }
 
-    function SettingsDialog({ sessions, updates, boot, upgrading, defaultSettings, onCopy, onClose, onRestore, onRestoreAll, onUpgrade, onRefreshUpdates, onSaveDefaults }) {
+    function SettingsDialog({ sessions, updates, boot, upgrading, defaultSettings, onCopy, onClose, onRestore, onRestoreAll, onUpgrade, onRefreshUpdates, onSaveDefaults, onImport }) {
       const [query, setQuery] = useState('');
       const dialogRef = useRef(null);
       useTrap(dialogRef);
@@ -3517,9 +3553,167 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   '最近一次写盘失败：' + boot.storage.saveError + '（改动可能没有保存到磁盘）')
                 : null,
             ),
+            h('div', { className: 'cw-upd-sec' },
+              h('div', { className: 'cw-set-title' },
+                h(Icon, { name: 'archive', size: 14 }),
+                '从 CLI 导入会话',
+              ),
+              h('div', { className: 'cw-set-note' }, '终端里跑过的会话也能出现在左栏；导入后可以接着聊，也能在这里删除。'),
+              h('div', { className: 'cw-set-actions' },
+                h('button', { className: 'cw-btn', onClick: onImport }, '扫描并导入…'),
+              ),
+            ),
           ),
           h('div', { className: 'cw-set-foot' },
             h('button', { onClick: onClose }, '完成'),
+          ),
+        ),
+      );
+    }
+
+    /**
+     * 「从 CLI 导入会话」：把终端里跑过的会话登记进工作台。
+     *
+     * 只登记指针（原生 session id），不复制正文——所以列表里只有标题、目录、时间和大小。
+     * 导入后在左栏就是一条普通会话，发消息会用 `--resume` / `exec resume` 接上原上下文，
+     * 删除时会连 CLI 那边的记录一起删。
+     */
+    function ImportDialog({ onClose, onImported }) {
+      const dialogRef = useRef(null);
+      useTrap(dialogRef);
+      const [loading, setLoading] = useState(true);
+      const [loadError, setLoadError] = useState('');
+      const [entries, setEntries] = useState([]);
+      const [selected, setSelected] = useState(() => new Set());
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+
+      useEffect(() => {
+        let alive = true;
+        api('/import/scan')
+          .then((data) => {
+            if (!alive) return;
+            setEntries(Array.isArray(data && data.entries) ? data.entries : []);
+            setLoading(false);
+          })
+          .catch((err) => {
+            if (!alive) return;
+            setLoadError(err.message);
+            setLoading(false);
+          });
+        return () => { alive = false; };
+      }, []);
+
+      const keyOf = (entry) => entry.provider + ':' + entry.nativeId;
+      const selectable = entries.filter((entry) => !entry.missingCwd);
+      const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(keyOf(entry)));
+
+      const toggle = (entry) => {
+        if (entry.missingCwd) return;
+        setSelected((current) => {
+          const next = new Set(current);
+          const key = keyOf(entry);
+          if (next.has(key)) next.delete(key); else next.add(key);
+          return next;
+        });
+      };
+
+      const toggleAll = () => {
+        setSelected(allSelected ? new Set() : new Set(selectable.map(keyOf)));
+      };
+
+      const submit = async () => {
+        if (!selected.size || busy) return;
+        setBusy(true);
+        setError('');
+        try {
+          const items = entries.filter((entry) => selected.has(keyOf(entry)))
+            .map((entry) => ({ provider: entry.provider, nativeId: entry.nativeId }));
+          const result = await api('/import', { method: 'POST', body: JSON.stringify({ items }) });
+          onImported(result);
+        } catch (err) {
+          setError(err.message);
+          setBusy(false);
+        }
+      };
+
+      const groups = [
+        { provider: 'claude', label: 'Claude Code' },
+        { provider: 'codex', label: 'Codex' },
+      ].map((group) => ({
+        ...group,
+        rows: entries.filter((entry) => entry.provider === group.provider),
+      })).filter((group) => group.rows.length);
+
+      return h('div', {
+        className: 'cw-mask',
+        onClick: (event) => { if (event.target === event.currentTarget && !busy) onClose(); },
+      },
+        h('div', {
+          className: 'cw-dialog cw-import', ref: dialogRef, role: 'dialog', 'aria-modal': 'true', 'aria-label': '从 CLI 导入会话',
+        },
+          h('div', { className: 'cw-dlg-head' },
+            h(Icon, { name: 'archive', size: 16 }),
+            h('b', null, '从 CLI 导入会话'),
+            h('button', { className: 'cw-iconbtn', onClick: onClose, disabled: busy, 'aria-label': '关闭' }, h(Icon, { name: 'x' })),
+          ),
+          h('div', { className: 'cw-dlg-body cw-import-body' },
+            h('div', { className: 'cw-hintline' }, '把终端里跑过的会话登记进来；历史仍留在 CLI 那边，导入后可以接着聊，也能在这里删除。'),
+            loading ? h('div', { className: 'cw-import-empty' }, '正在扫描 CLI 记录…') : null,
+            loadError ? h('div', { className: 'cw-ws-del-error', role: 'alert' }, '扫描失败：' + loadError) : null,
+            !loading && !loadError && !entries.length
+              ? h('div', { className: 'cw-import-empty' }, '没有发现新会话：CLI 记录里的会话都已经在工作台里了。')
+              : null,
+            !loading && entries.length ? h('div', { className: 'cw-import-list' },
+              groups.map((group) => h('div', { key: group.provider, className: 'cw-import-group' },
+                h('div', { className: 'cw-import-grouphead' },
+                  h('span', null, group.label),
+                  h('span', { className: 'cw-import-count' }, group.rows.length + ' 个'),
+                ),
+                group.rows.map((entry) => {
+                  const key = keyOf(entry);
+                  const checked = selected.has(key);
+                  return h('label', {
+                    key,
+                    className: 'cw-import-row' + (entry.missingCwd ? ' is-disabled' : '') + (checked ? ' is-checked' : ''),
+                    title: entry.missingCwd ? '工作目录已不存在，导入后无法继续这个会话' : entry.cwd,
+                  },
+                    h('input', {
+                      type: 'checkbox',
+                      checked,
+                      disabled: entry.missingCwd || busy,
+                      onChange: () => toggle(entry),
+                    }),
+                    h('span', { className: 'cw-import-main' },
+                      h('span', { className: 'cw-import-title' }, entry.title),
+                      h('span', { className: 'cw-import-meta' },
+                        (entry.cwd ? basename(entry.cwd) : '（无目录）')
+                        + ' · ' + (timeAgo(entry.updatedAt) || '')
+                        + ' · ' + fmtBytes(entry.size)
+                        + (entry.archived ? ' · 已归档' : '')
+                        + (entry.missingCwd ? ' · 目录不存在' : ''),
+                      ),
+                    ),
+                  );
+                }),
+              )),
+            ) : null,
+            error ? h('div', { className: 'cw-ws-del-error', role: 'alert' }, error) : null,
+          ),
+          h('div', { className: 'cw-dlg-foot cw-import-foot' },
+            h('button', {
+              type: 'button',
+              className: 'cw-import-all',
+              onClick: toggleAll,
+              disabled: busy || !selectable.length,
+            }, allSelected ? '取消全选' : '全选 ' + selectable.length + ' 个'),
+            h('span', { className: 'cw-import-spacer' }),
+            h('button', { onClick: onClose, disabled: busy }, '取消'),
+            h('button', {
+              className: 'primary',
+              onClick: submit,
+              disabled: busy || !selected.size,
+            }, busy ? '导入中…' : '导入' + (selected.size ? ' ' + selected.size + ' 个' : '')),
           ),
         ),
       );
@@ -4093,6 +4287,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const [newInitial, setNewInitial] = useState({ provider: 'claude', cwd: '' });
       const [pendingPrompt, setPendingPrompt] = useState('');
       const [showSettings, setShowSettings] = useState(false);
+      /* 「从 CLI 导入会话」弹窗：设置里点「扫描并导入…」打开 */
+      const [importOpen, setImportOpen] = useState(false);
       /* 切到别的面板时 DSH 会卸载本面板。这里记下当时的 URL，切回来时如果 DSH
          已经回到了某个会话（面板不再选中），就把面板重新打开——否则会看到
          「明明在会话列表里，工作台却被换成了聊天界面」。 */
@@ -5335,9 +5531,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         // 逐条删、逐条记失败：整批 try 的话，中间一条失败会留下「前面已删、后面没删」
         // 的半成品状态，而重试又从第一条开始，必然再撞到已删除的 id，永远删不完。
         const failed = [];
+        /* CLI 那边的记录有没有真删掉：Host 会在响应里带回 { deleted, error }。
+           删不掉的必须说出来——不然用户以为终端里也清干净了。 */
+        const cliLeft = [];
         for (const id of ids) {
-          try { await api('/sessions/' + id, { method: 'DELETE' }); }
-          catch (error) { failed.push({ id, message: error.message }); }
+          try {
+            const result = await api('/sessions/' + id, { method: 'DELETE' });
+            if (result && result.cli && result.cli.deleted === false) cliLeft.push(result.cli);
+          } catch (error) { failed.push({ id, message: error.message }); }
         }
         const doneIds = ids.filter((id) => !failed.some((entry) => entry.id === id));
         setSessions((list) => list.filter((item) => !doneIds.includes(item.id)));
@@ -5363,6 +5564,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           return;
         }
         setConfirmBox(null);
+        if (cliLeft.length) {
+          /* 工作台这边删掉了，CLI 那边的记录还在——说清楚是哪个、为什么，
+             不要用「已删除」把它盖过去。 */
+          const first = cliLeft[0];
+          showToast('已删除 ' + ids.length + ' 个会话；但 CLI 记录没删掉'
+            + (first.error ? '（' + first.error + '）' : '')
+            + (cliLeft.length > 1 ? '，共 ' + cliLeft.length + ' 个' : '')
+            + '。可能那个 CLI 还在终端里跑着，关掉它再删一次。');
+          return;
+        }
         showToast(ids.length > 1 ? '已删除 ' + ids.length + ' 个会话' : '已删除会话');
       };
 
@@ -6473,8 +6684,29 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           onClose: () => setRulesOpen(false),
           onToast: (text) => showToast(text),
         }) : null,
+        importOpen ? h(ImportDialog, {
+          onClose: () => setImportOpen(false),
+          /* 导入结果：会话与工作区一起换新；顺手切到第一条，让人看见确实进来了。 */
+          onImported: (result) => {
+            setImportOpen(false);
+            if (result && Array.isArray(result.sessions)) setSessions(result.sessions);
+            if (result && result.workspaces) applyWorkspaces(result.workspaces);
+            const created = result && Array.isArray(result.created) ? result.created : [];
+            const skipped = result && Array.isArray(result.skipped) ? result.skipped : [];
+            if (!created.length) {
+              showToast(skipped.length ? '没有导入：' + skipped[0].reason : '没有可导入的会话');
+              return;
+            }
+            const first = created[0];
+            if (first.provider) setTopProvider(first.provider);
+            selectSession(first.id);
+            showToast('已导入 ' + created.length + ' 个会话' + (skipped.length ? '，跳过 ' + skipped.length + ' 个' : ''));
+          },
+        }) : null,
         showSettings ? h(SettingsDialog, {          sessions, updates, boot, upgrading, defaultSettings: defaults, onCopy: copyText,
           onClose: () => setShowSettings(false),
+          /* 导入是独立弹窗：设置先关掉，免得两个遮罩叠在一起 */
+          onImport: () => { setShowSettings(false); setImportOpen(true); },
           onSaveDefaults: async (next) => {
             try {
               const saved = await api('/settings', { method: 'POST', body: JSON.stringify(next) });
@@ -6658,7 +6890,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
     return {
       inject: ['slots'],
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
-      __parts: { TurnRail, TodoCard, RulesDialog, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
+      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
                 try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
         try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }

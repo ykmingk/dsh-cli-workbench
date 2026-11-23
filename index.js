@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as claudeAdapter from './lib/claude.js';
 import * as codexAdapter from './lib/codex.js';
+import { scanClaudeSessions, scanCodexSessions } from './lib/history.js';
 import { contentToText, toolTarget, toolCategory, toolVerb, diffOf, humanImpact, isAdvisoryMessage, codexFailureText } from './lib/format.js';
 import { now, idOf, text, clipText, oneLine, realCwd, run, killTree, PERMISSION_MODES, SANDBOX_MODES, SANDBOX_BACKENDS, MAX_ITEMS, API, json } from './lib/util.js';
 
@@ -583,6 +584,35 @@ function attachmentNote(attachments, options) {
 function claudeProjectsDir() {
   const base = text(process.env.CLAUDE_CONFIG_DIR).trim() || path.join(os.homedir(), '.claude');
   return path.join(base, 'projects');
+}
+
+/** Codex 的记录目录：`sessions` 是正常会话，`archived_sessions` 是归档会话。 */
+function codexRolloutDirs() {
+  const home = path.join(os.homedir(), '.codex');
+  return [path.join(home, 'sessions'), path.join(home, 'archived_sessions')];
+}
+
+/**
+ * 直接删 Codex 的 rollout 文件（`codex delete --force` 失败、或是归档会话时的兜底）。
+ * 只按 UUID 精确匹配文件名，不碰别的会话。
+ */
+function removeCodexRollout(threadId) {
+  const id = codexSessionArg(threadId);
+  if (!id) return false;
+  const suffix = '-' + id + '.jsonl';
+  let removed = false;
+  const walk = (dir) => {
+    let items = [];
+    try { items = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const item of items) {
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) { walk(full); continue; }
+      if (!item.isFile() || !item.name.endsWith(suffix)) continue;
+      try { rmSync(full, { force: true }); removed = true; } catch { /* 被占用就留给上层报错 */ }
+    }
+  };
+  for (const dir of codexRolloutDirs()) walk(dir);
+  return removed;
 }
 
 /**
@@ -1310,6 +1340,22 @@ class Workbench {
       // 只报大小与个数，不列文件名：设置面板只要一行读数。
       return json(res, 200, this.diskUsage());
     }
+    if (route === '/import/scan' && method === 'GET') {
+      /* 只读扫描 CLI 自己的历史，列出工作台还不认识的会话（导入入口用）。 */
+      return json(res, 200, this.importScan());
+    }
+    if (route === '/import' && method === 'POST') {
+      const body = await readBody(req);
+      const items = Array.isArray(body.items) ? body.items : [];
+      if (!items.length) return json(res, 400, { error: '没有选择要导入的会话' });
+      const result = this.importSessions(items);
+      return json(res, 200, {
+        created: result.created,
+        skipped: result.skipped,
+        sessions: this.list(),
+        workspaces: this.workspaceList(),
+      });
+    }
     if (route === '/settings' && method === 'GET') {
       return json(res, 200, this.settings);
     }
@@ -1479,8 +1525,10 @@ class Workbench {
       }
       if (!action && method === 'DELETE') {
         this.logOperation('session.delete', { id: session.id, provider: session.provider, cwd: session.cwd, title: session.title });
-        await this.deleteSession(session);
-        return json(res, 200, { ok: true });
+        /* cli 带回「CLI 记录到底删掉没有」：codex delete 失败时会退化成删文件，
+           都失败就把原因交给界面，别让用户以为删干净了。 */
+        const cli = await this.deleteSession(session);
+        return json(res, 200, { ok: true, cli });
       }
       if (action === '/message' && method === 'POST') {
         // 附件走 base64 JSON：上限比普通请求大，实际大小在 saveAttachments 里再核。
@@ -1745,6 +1793,146 @@ class Workbench {
     return session;
   }
 
+  /* ------------------------------------------- 从 CLI 导入会话（只登记指针） */
+
+  /**
+   * 扫 CLI 自己的历史，列出「工作台还不认识」的会话。
+   *
+   * 只读：只取 id / cwd / 首条用户消息 / 时间 / 大小，正文仍留在 CLI 那边。
+   * 工作目录已经不在的会话也列出来，但打上 missingCwd——那种会话导入后也 resume 不了
+   * （CLI 要在那个 cwd 下跑），界面上禁掉。
+   */
+  importScan() {
+    const known = new Set();
+    for (const session of this.sessions.values()) {
+      if (session.provider === 'claude' && session.claudeSessionId) known.add('claude:' + session.claudeSessionId);
+      if (session.provider === 'codex' && session.codexThreadId) known.add('codex:' + session.codexThreadId);
+    }
+    const entries = [];
+    for (const entry of scanClaudeSessions(claudeProjectsDir())) {
+      if (!known.has('claude:' + entry.nativeId)) entries.push(entry);
+    }
+    const [sessionDir, archivedDir] = codexRolloutDirs();
+    for (const entry of scanCodexSessions(sessionDir, archivedDir)) {
+      if (!known.has('codex:' + entry.nativeId)) entries.push(entry);
+    }
+    entries.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const list = entries.map((entry) => {
+      let missingCwd = false;
+      try { missingCwd = !entry.cwd || !statSync(entry.cwd).isDirectory(); } catch { missingCwd = true; }
+      return {
+        provider: entry.provider,
+        nativeId: entry.nativeId,
+        cwd: entry.cwd || '',
+        title: entry.title,
+        updatedAt: entry.updatedAt,
+        size: entry.size,
+        archived: Boolean(entry.archived),
+        missingCwd,
+      };
+    });
+    return {
+      entries: list,
+      claudeDir: claudeProjectsDir(),
+      codexDir: codexRolloutDirs()[0],
+    };
+  }
+
+  /**
+   * 把若干条扫描结果登记成工作台会话：只写指针（claudeSessionId / codexThreadId），
+   * 不复制正文。**服务端自己再扫一遍**——客户端送来的 id 只是意向，标题与 cwd 一律
+   * 以磁盘为准，顺便挡住「导入一个其实不存在的会话」。
+   */
+  importSessions(items) {
+    const created = [];
+    const skipped = [];
+    const wanted = new Set();
+    for (const item of Array.isArray(items) ? items : []) {
+      const provider = item && item.provider === 'codex' ? 'codex' : item && item.provider === 'claude' ? 'claude' : '';
+      const nativeId = text(item && item.nativeId);
+      if (!provider || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId)) {
+        skipped.push({ provider, nativeId, reason: '会话 id 无效' });
+        continue;
+      }
+      wanted.add(provider + ':' + nativeId);
+    }
+    if (!wanted.size) return { created, skipped };
+
+    const found = new Map();
+    for (const entry of scanClaudeSessions(claudeProjectsDir())) found.set('claude:' + entry.nativeId, entry);
+    const [sessionDir, archivedDir] = codexRolloutDirs();
+    for (const entry of scanCodexSessions(sessionDir, archivedDir)) found.set('codex:' + entry.nativeId, entry);
+
+    const taken = new Set();
+    for (const session of this.sessions.values()) {
+      if (session.claudeSessionId) taken.add('claude:' + session.claudeSessionId);
+      if (session.codexThreadId) taken.add('codex:' + session.codexThreadId);
+    }
+
+    for (const key of wanted) {
+      const entry = found.get(key);
+      const separator = key.indexOf(':');
+      const provider = key.slice(0, separator);
+      const nativeId = key.slice(separator + 1);
+      if (!entry) { skipped.push({ provider, nativeId, reason: '磁盘上找不到这个会话的记录' }); continue; }
+      if (taken.has(key)) { skipped.push({ provider, nativeId, reason: '已经在工作台里了' }); continue; }
+      let cwd = realCwd(text(entry.cwd));
+      try {
+        if (!cwd || !statSync(cwd).isDirectory()) { skipped.push({ provider, nativeId, reason: '工作目录不存在：' + (entry.cwd || '(空)') }); continue; }
+      } catch {
+        skipped.push({ provider, nativeId, reason: '工作目录不存在：' + (entry.cwd || '(空)') });
+        continue;
+      }
+      const session = {
+        id: idOf('cw'),
+        provider,
+        cwd,
+        title: oneLine(entry.title || '导入的会话', 60) || '导入的会话',
+        createdAt: Number(entry.updatedAt) || now(),
+        updatedAt: Number(entry.updatedAt) || now(),
+        status: 'idle',
+        pinned: false,
+        archived: false,
+        archivedKind: '',
+        claudeSessionId: provider === 'claude' ? nativeId : null,
+        codexThreadId: provider === 'codex' ? nativeId : null,
+        permissionMode: this.settings.claudeMode,
+        sandboxMode: this.settings.codexMode,
+        model: '',
+        allowedTools: [],
+        items: [],
+        usage: null,
+        files: [],
+        error: null,
+        pending: null,
+        pendingQueue: [],
+        imported: true,
+      };
+      this.sessions.set(session.id, session);
+      this.ensureWorkspace(cwd, null, provider);
+      /* 历史不在工作台里，但得让人知道这条会话是「接过来的」而不是空的。
+         发一条 notice 当占位说明；之后的消息会通过 --resume / exec resume 接上。 */
+      this.push(session, {
+        id: idOf('notice'),
+        kind: 'notice',
+        at: now(),
+        text: '从 CLI 导入的会话：历史记录仍在 CLI 那边，这里只登记了指针；发消息会接着原会话继续。',
+      });
+      taken.add(key);
+      created.push(this.publicSession(session));
+      this.logOperation('session.import', { id: session.id, provider, nativeId, cwd });
+    }
+    if (created.length) this.save();
+    return { created, skipped };
+  }
+
+  /**
+   * 删会话：工作台的索引 + CLI 自己的记录。
+   *
+   * 返回值把「CLI 那边到底删掉没有」带回去——以前这里是 fire-and-forget，
+   * codex delete 失败只写进 operations.log，用户以为删干净了，rollout 还留着。
+   * @returns {{ provider: string, nativeId: string, deleted: boolean, error: string, via?: string }}
+   */
   async deleteSession(session) {
     await this.stop(session);
     const child = this.procs.get(session.id);
@@ -1753,12 +1941,25 @@ class Workbench {
       this.procs.delete(session.id);
     }
     try { rmSync(path.join(this.mcpDir, session.id + '.mcp.json'), { force: true }); } catch { /* ignore */ }
-    // CLI 自己的记录也要真删，否则「删会话」只删了工作台的索引，C 盘上还留着。
+    /* CLI 自己的记录也要真删，否则「删会话」只删了工作台的索引，C 盘上还留着。 */
+    let cli = { provider: session.provider, nativeId: '', deleted: true, error: '' };
     if (session.provider === 'claude' && session.claudeSessionId) {
-      try { this.removeClaudeTranscript(session.claudeSessionId); } catch { /* ignore */ }
+      cli.nativeId = session.claudeSessionId;
+      try {
+        const removed = this.removeClaudeTranscript(session.claudeSessionId);
+        if (!removed) {
+          /* 没找到 = 记录本来就不在了（CLI 那边删过、或 30 天清理过）。
+             这不是失败，但要说清楚，免得以为是我们删的。 */
+          cli.via = 'not-found';
+        }
+      } catch (error) {
+        cli.deleted = false;
+        cli.error = oneLine(text(error && error.message || error), 200);
+      }
     }
-    if (session.provider === 'codex' && session.codexThreadId) {
+    if (session.provider === 'codex') {
       const thread = codexSessionArg(session.codexThreadId);
+      cli.nativeId = thread;
       /* 非交互环境里 `codex delete` 必须带 --force：不带只会报
          「cannot confirm session deletion without an interactive terminal」，
          然后 rollout 文件一直留着（同一个坑也让 C 盘慢慢变大）。
@@ -1766,13 +1967,21 @@ class Workbench {
          二次解析掉，codex 收到的就不是 UUID 了（实测报「--force requires a
          session UUID」）。UUID 本身没有空格，裸放最稳。 */
       if (thread) {
-        run('codex delete --force ' + thread).then((result) => {
-          if (result.code !== 0) {
+        const result = await run('codex delete --force ' + thread);
+        if (result.code !== 0) {
+          /* 命令失败（旧版没有 delete、归档会话不认、被占用……）：按 UUID 直接删文件。
+             删到了就算成功，删不到才把错误交回给界面。 */
+          const removed = removeCodexRollout(thread);
+          if (removed) {
+            cli.via = 'file';
+          } else {
+            cli.deleted = false;
+            cli.error = oneLine(text(result.stderr || result.stdout) || ('codex delete 退出码 ' + result.code), 200);
             this.logOperation('session.cli-delete-failed', {
-              provider: 'codex', thread, detail: oneLine(result.stderr || result.stdout, 200),
+              provider: 'codex', thread, detail: cli.error,
             });
           }
-        });
+        }
       }
     }
     this.sessions.delete(session.id);
@@ -1786,6 +1995,7 @@ class Workbench {
     const set = this.streams.get(session.id);
     if (set) { for (const res of set) { try { res.end(); } catch { /* ignore */ } } this.streams.delete(session.id); }
     this.scheduleSave();
+    return cli;
   }
 
   /* --------------------------------------------------------------- status */
@@ -2514,13 +2724,13 @@ class Workbench {
     for (const project of projects) {
       if (!project.isDirectory()) continue;
       const dir = path.join(claudeProjectsDir(), project.name);
-      try {
-        const transcript = path.join(dir, id + '.jsonl');
-        if (existsSync(transcript)) { rmSync(transcript, { force: true }); removed = true; }
-        // 同一会话的工具结果（Read/搜索的原始输出）单独放在同名目录里
-        const sidecar = path.join(dir, id);
-        if (existsSync(sidecar)) { rmSync(sidecar, { recursive: true, force: true }); removed = true; }
-      } catch { /* 文件被占用不影响删除工作台会话 */ }
+      /* 这里不再吞异常：文件被别的 claude 进程占着时删不掉，必须让上层能报出来——
+         否则用户以为删了，`claude --resume` 里还躺着。 */
+      const transcript = path.join(dir, id + '.jsonl');
+      if (existsSync(transcript)) { rmSync(transcript, { force: true }); removed = true; }
+      // 同一会话的工具结果（Read/搜索的原始输出）单独放在同名目录里
+      const sidecar = path.join(dir, id);
+      if (existsSync(sidecar)) { rmSync(sidecar, { recursive: true, force: true }); removed = true; }
     }
     return removed;
   }

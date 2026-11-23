@@ -244,7 +244,8 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 - 会话记录保存在当前 DSH profile 的数据目录：`cli-workbench/state.json`（工作区清单）+ `cli-workbench/sessions/<会话 id>.json`（一个会话一个文件），只在本机。
 - 输入框里的图片与文件存放在 `cli-workbench/attachments/<会话 id>/`，文件名由 Host 重新生成（用户给的名字只作可读后缀，路径分隔符会被抹掉）；删会话时这个目录一起删。聊天记录里只存名字、类型、大小，不重复存字节。
 - **设置 → 数据存放位置**会显示一行 `CLI 记录占用`（Claude / Codex / 附件各多少 MB、多少个文件）。打开设置时统计一次，Host 缓存 5 分钟，最多数 2 万个文件；只读，不删任何文件。
-- **删除会话会连 CLI 的记录一起删**：Claude 是 `~/.claude/projects/<目录编码>/<会话 id>.jsonl` 与同名 `tool-results/` 目录（CLI 没有删除命令，Host 按 id 精确删）；Codex 是 `codex delete --force <uuid>`（非交互环境必须 `--force`，否则它只报「需要交互终端确认」）。**归档只是从列表收起**，CLI 记录保留，仍可 `claude --resume` / `codex resume`。
+- **删除会话会连 CLI 的记录一起删**：Claude 是 `~/.claude/projects/<目录编码>/<会话 id>.jsonl` 与同名 `tool-results/` 目录（CLI 没有删除命令，Host 按 id 精确删）；Codex 是 `codex delete --force <uuid>`，**命令失败时按 uuid 直接删 rollout 文件兜底**（覆盖「旧版没有 delete」「归档会话不认」「文件被占用」几种情况）。删除接口会带回 `{ deleted, error, via }`：删不掉时界面明确提示，不再用「已删除」盖过去。**归档只是从列表收起**，CLI 记录保留，仍可 `claude --resume` / `codex resume`。
+- **从 CLI 导入会话**（`GET /import/scan`、`POST /import`）：只读扫描 `~/.claude/projects/*/*.jsonl` 与 `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl`，每个文件只读头部 256KB 取 `cwd` 与首条用户消息；只登记 `claudeSessionId` / `codexThreadId`，不复制正文。扫描时跳过子代理转录（`isSidechain` / 非 uuid 文件名），Codex 的标题取 `event_msg/item_completed/UserMessage` 而不是 `response_item`（后者混着 AGENTS.md 注入）。导入时服务端会**再扫一遍**，标题与 cwd 以磁盘为准，非法 id、目录缺失、重复导入都会被跳过并回报原因。
 - 一个会话一个文件的好处：改一个会话只重写它自己那份；某个文件损坏只影响那一个会话，不会像单文件那样整份读不出来。旧版本的 `sessions.json` 会在升级时自动迁移，并改名成 `sessions.json.migrated-<时间>` 保留，随时可以改回去。
 - CLI 进程由本机 `claude` / `codex` 可执行文件启动，环境变量沿用当前 DSH 进程；不会上传会话内容到第三方。
 - Claude 会话复用同一个 CLI 进程以支持多轮；空闲 10 分钟后进程会被回收，下一条消息用 `--resume` 恢复；删除会话或卸载插件会终止对应进程。

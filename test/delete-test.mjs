@@ -76,7 +76,7 @@ ok('不存在的 id 返回 false', remove(randomUUID()) === false);
 ok('非 UUID 直接拒绝', remove('../../CLI工作台') === false && remove('') === false);
 
 /* —— 静态断言：调用点与 codex --force —— */
-ok('删会话时调用 Claude 记录清理', /session\.provider === 'claude' && session\.claudeSessionId[\s\S]{0,80}removeClaudeTranscript/.test(src));
+ok('删会话时调用 Claude 记录清理', /session\.provider === 'claude' && session\.claudeSessionId[\s\S]{0,200}removeClaudeTranscript/.test(src));
 ok('codex 删除带 --force', src.includes("run('codex delete --force ' + thread)"));
 ok('codex 参数不套引号（cmd 下会被二次解析）',
   !src.includes("codex delete --force \\\"' + thread") && !src.includes('codex archive \\"" + thread'));
