@@ -767,6 +767,11 @@ class Workbench {
           cwd: dir,
           title: text(raw.title) || path.basename(dir) || dir,
           addedAt: Number(raw.addedAt) || now(),
+          // 某个助手侧「移除工作区」只是隐藏：同一目录另一个助手还在用，
+          // 全局登记必须留着，否则它的会话会被打散到「未分组」。
+          hiddenFor: Array.isArray(raw.hiddenFor)
+            ? raw.hiddenFor.filter((item) => item === 'claude' || item === 'codex')
+            : [],
         });
       }
       for (const raw of list) {
@@ -1022,20 +1027,37 @@ class Workbench {
   workspaceList() {
     return [...this.workspaces.values()]
       .sort((a, b) => a.addedAt - b.addedAt)
-      .map((entry) => ({ cwd: entry.cwd, title: entry.title, addedAt: entry.addedAt }));
+      .map((entry) => ({
+        cwd: entry.cwd,
+        title: entry.title,
+        addedAt: entry.addedAt,
+        // 客户端按它决定这一行在哪个助手侧显示；旧数据没有这个字段时按「都不隐藏」。
+        hiddenFor: Array.isArray(entry.hiddenFor) ? entry.hiddenFor : [],
+      }));
   }
 
-  ensureWorkspace(dir, titleOverride) {
+  /**
+   * 登记 / 恢复一个工作区。
+   * @param provider 传入时，把这个助手从 hiddenFor 里清掉——新建会话或手动
+   *   「添加工作区」意味着它又要在这一侧出现。
+   */
+  ensureWorkspace(dir, titleOverride, provider) {
     const cwd = realCwd(text(dir));
     if (!cwd) return null;
     const wanted = titleOverride ? oneLine(String(titleOverride).trim(), 60) : '';
     const existing = this.workspaces.get(cwd.toLowerCase());
     if (existing) {
+      let changed = false;
       // 撤销删除时会带着原名字回来：保留用户自定义的显示名
-      if (wanted && existing.title !== wanted) { existing.title = wanted; this.save(); }
+      if (wanted && existing.title !== wanted) { existing.title = wanted; changed = true; }
+      if (provider && Array.isArray(existing.hiddenFor) && existing.hiddenFor.includes(provider)) {
+        existing.hiddenFor = existing.hiddenFor.filter((item) => item !== provider);
+        changed = true;
+      }
+      if (changed) this.save();
       return existing;
     }
-    const entry = { cwd, title: wanted || path.basename(cwd) || cwd, addedAt: now() };
+    const entry = { cwd, title: wanted || path.basename(cwd) || cwd, addedAt: now(), hiddenFor: [] };
     this.workspaces.set(cwd.toLowerCase(), entry);
     // 用户的一次显式操作：立刻落盘，避免 debounce 窗口里崩掉丢掉工作区增删。
     this.save();
@@ -1065,14 +1087,30 @@ class Workbench {
    * Remove a directory from the workbench's workspace list. The folder and its
    * sessions are untouched: like DSH, the sessions fall back to "未分组" and can
    * re-register the workspace by starting a new session there.
+   *
+   * `provider` 传入且**另一个助手**在这个目录里还有会话时，不删全局登记，
+   * 只把这一侧记进 hiddenFor：另一侧的会话继续按工作区分组（同一个目录被
+   * 两个助手同时使用是常见场景，删一侧不该把另一侧打散）。
+   * @returns null（没有这个工作区）| { entry, hidden }
    */
-  removeWorkspace(dir) {
+  removeWorkspace(dir, provider) {
     const cwd = realCwd(text(dir));
     const entry = cwd ? this.workspaces.get(cwd.toLowerCase()) : null;
-    if (!entry) return false;
+    if (!entry) return null;
+    if (provider === 'claude' || provider === 'codex') {
+      const other = provider === 'claude' ? 'codex' : 'claude';
+      const otherInUse = [...this.sessions.values()].some((session) => !session.archived
+        && (session.provider || 'claude') === other
+        && String(session.cwd || '').toLowerCase() === entry.cwd.toLowerCase());
+      if (otherInUse) {
+        entry.hiddenFor = Array.from(new Set([...(Array.isArray(entry.hiddenFor) ? entry.hiddenFor : []), provider]));
+        this.save();
+        return { entry, hidden: true };
+      }
+    }
     this.workspaces.delete(entry.cwd.toLowerCase());
     this.save();
-    return true;
+    return { entry, hidden: false };
   }
 
   publicSession(session) {
@@ -1336,7 +1374,9 @@ class Workbench {
       if (!isDir) return json(res, 400, { error: '目录不存在：' + cwd });
       const title = text(body.title || '').trim();
       if (title.length > 60) return json(res, 400, { error: '工作区名称最长 60 个字符' });
-      const entry = this.ensureWorkspace(cwd, title);
+      // provider 让「撤销删除 / 手动添加」把这一侧从 hiddenFor 里放出来。
+      const provider = body.provider === 'claude' || body.provider === 'codex' ? body.provider : '';
+      const entry = this.ensureWorkspace(cwd, title, provider);
       if (!entry) return json(res, 400, { error: '无法登记该目录' });
       this.logOperation('workspace.add', { cwd: entry.cwd, title: entry.title });
       return json(res, 200, { ok: true, workspaces: this.workspaceList() });
@@ -1359,12 +1399,20 @@ class Workbench {
     if (route === '/workspaces' && method === 'DELETE') {
       const cwd = text(url.searchParams.get('cwd') || '');
       if (!cwd) return json(res, 400, { error: 'cwd required' });
-      const resolved = realCwd(cwd);
-      const known = resolved ? this.workspaces.get(resolved.toLowerCase()) : null;
-      if (!this.removeWorkspace(cwd)) return json(res, 404, { error: '工作区不存在：' + cwd });
-      // 记下名字：撤销时要用原显示名重建
-      this.logOperation('workspace.remove', { cwd: known ? known.cwd : resolved, title: known ? known.title : '' });
-      return json(res, 200, { ok: true, removed: known ? { cwd: known.cwd, title: known.title } : null, workspaces: this.workspaceList() });
+      const asked = url.searchParams.get('provider');
+      const provider = asked === 'claude' || asked === 'codex' ? asked : '';
+      const result = this.removeWorkspace(cwd, provider);
+      if (!result) return json(res, 404, { error: '工作区不存在：' + cwd });
+      this.logOperation('workspace.remove', {
+        cwd: result.entry.cwd, title: result.entry.title, provider, hidden: result.hidden,
+      });
+      return json(res, 200, {
+        ok: true,
+        // true = 只在这一侧隐藏（另一侧还有会话，全局登记留着）
+        hidden: result.hidden,
+        removed: { cwd: result.entry.cwd, title: result.entry.title },
+        workspaces: this.workspaceList(),
+      });
     }
     if (route === '/sessions' && method === 'POST') {
       const body = await readBody(req);
@@ -1403,7 +1451,7 @@ class Workbench {
         pendingQueue: [],
       };
       this.sessions.set(session.id, session);
-      this.ensureWorkspace(cwd);
+      this.ensureWorkspace(cwd, null, provider);
       this.scheduleSave();
       this.logOperation('session.create', { id: session.id, provider, cwd, title: session.title });
       return json(res, 200, { session: this.publicSession(session), items: [], workspaces: this.workspaceList() });

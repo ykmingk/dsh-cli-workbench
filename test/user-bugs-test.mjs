@@ -99,9 +99,9 @@ console.log('\n[新增能力] 工作区可添加 / 可撤销 / 有排查日志')
 {
   ok('Host 新增 POST /workspaces', srcIndex.includes("route === '/workspaces' && method === 'POST'"));
   ok('POST 校验目录存在', srcIndex.includes("error: '目录不存在：' + cwd"));
-  ok('DELETE 回传被删的那条（供撤销）', srcIndex.includes('removed: known ? { cwd: known.cwd, title: known.title } : null'));
-  ok('ensureWorkspace 支持恢复原显示名', srcIndex.includes('ensureWorkspace(dir, titleOverride)'));
-  ok('客户端有撤销入口', srcClient.includes("label: '撤销'") && srcClient.includes('restoreWorkspace(removed.cwd, removed.title)'));
+  ok('DELETE 回传被删的那条（供撤销）', srcIndex.includes('removed: { cwd: result.entry.cwd, title: result.entry.title }'));
+  ok('ensureWorkspace 支持恢复原显示名', srcIndex.includes('ensureWorkspace(dir, titleOverride, provider)'));
+  ok('客户端有撤销入口', srcClient.includes("label: '撤销'") && srcClient.includes('restoreWorkspace(removed.cwd, removed.title, removed.provider)'));
   ok('左栏有「把目录添加为工作区」按钮', srcClient.includes("title: '把目录添加为工作区'"));
   ok('操作日志不通过接口暴露',
     srcIndex.includes("logOperation('workspace.add'")

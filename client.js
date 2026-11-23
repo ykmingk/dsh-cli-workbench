@@ -3417,6 +3417,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const dialogRef = useRef(null);
       useTrap(dialogRef);
       const label = target.title || target.cwd;
+      const who = providerMeta(target.provider).label;
+      const other = providerMeta(target.provider === 'codex' ? 'claude' : 'codex').label;
+      /* 另一侧还有会话时，Host 只会把这一侧记进 hiddenFor：全局登记留着，
+         另一侧的会话继续按工作区分组。文案必须说清楚"删的是这一侧"。 */
+      const hideOnly = Boolean(target.others);
       return h('div', {
         className: 'cw-mask',
         onClick: (event) => { if (event.target === event.currentTarget && !busy) onClose(); },
@@ -3424,24 +3429,22 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       h('div', { className: 'cw-dialog narrow', ref: dialogRef, role: 'dialog', 'aria-modal': 'true', 'aria-label': '删除工作区' },
         h('div', { className: 'cw-dlg-head' },
           h(Icon, { name: 'alert', size: 16 }),
-          h('b', null, '删除工作区'),
+          h('b', null, hideOnly ? '从这一侧移除工作区' : '删除工作区'),
           h('button', { className: 'cw-iconbtn', onClick: onClose, disabled: busy, 'aria-label': '关闭' }, h(Icon, { name: 'x' })),
         ),
         h('div', { className: 'cw-dlg-body' },
           h('div', { className: 'cw-ws-del-name' }, h(Icon, { name: 'folder', size: 15 }), label),
-          h('div', { className: 'cw-hintline' }, '只从列表移除；文件夹与会话保留，会话落到「未分组」。'),
-          target.others
-            ? h('div', { className: 'cw-hintline' }, '注意：这个目录里还有 ' + target.others + ' 个 '
-              + providerMeta(target.provider === 'codex' ? 'claude' : 'codex').label
-              + ' 会话；工作区按目录登记，删掉后它们也会落到「未分组」。')
-            : null,
+          h('div', { className: 'cw-hintline' }, hideOnly
+            ? '只从 ' + who + ' 侧移除；本侧会话落到「未分组」，' + other + ' 侧仍按工作区分组（'
+              + target.others + ' 个会话不受影响）。'
+            : '只从列表移除；文件夹与会话保留，会话落到「未分组」。'),
           h('div', { className: 'cw-hintline', title: target.cwd }, target.cwd),
-          busy ? h('div', { className: 'cw-set-note', role: 'status' }, '正在删除工作区…') : null,
+          busy ? h('div', { className: 'cw-set-note', role: 'status' }, '正在移除工作区…') : null,
           error ? h('div', { className: 'cw-ws-del-error', role: 'alert' }, error) : null,
         ),
         h('div', { className: 'cw-dlg-foot' },
           h('button', { onClick: onClose, disabled: busy }, '取消'),
-          h('button', { className: 'danger', onClick: onConfirm, disabled: busy }, '删除工作区'),
+          h('button', { className: 'danger', onClick: onConfirm, disabled: busy }, hideOnly ? '从 ' + who + ' 侧移除' : '删除工作区'),
         ),
       ),
       );
@@ -3662,8 +3665,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         : base;
       const scopedCwds = new Set(base.map((session) => String(session.cwd || '').toLowerCase()).filter(Boolean));
       // 工作区是分组的单位（跟 DSH 一样）：登记过的工作区即使还没有会话也占一行，
-      // 被删掉的工作区里留下的会话落到「未分组」。
-      const registry = new Map((Array.isArray(workspaces) ? workspaces : []).map((entry) => [String(entry.cwd || '').toLowerCase(), entry]));
+      // 被删掉的工作区里留下的会话落到「未分组」。hiddenFor 是「这一侧移除了，
+      // 但另一个助手还在用」：登记仍然全局存在，只是不在当前助手这里显示。
+      const visibleWorkspaces = (Array.isArray(workspaces) ? workspaces : [])
+        .filter((entry) => !(Array.isArray(entry.hiddenFor) && entry.hiddenFor.includes(provider)));
+      const registry = new Map(visibleWorkspaces.map((entry) => [String(entry.cwd || '').toLowerCase(), entry]));
       const groups = [];
       const groupOf = (key, cwd, title, workspace) => {
         const found = groups.find((entry) => entry.key.toLowerCase() === key.toLowerCase());
@@ -3673,7 +3679,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         return group;
       };
       if (registry.size) {
-        for (const entry of workspaces) {
+        for (const entry of visibleWorkspaces) {
           const cwd = String(entry.cwd || '').toLowerCase();
           // 空工作区只属于「有该助手会话的目录」，或还没登记过任何会话的目录；
           // 另一个助手专用的目录不会出现在这里（否则点开会是个空壳）。
@@ -4559,9 +4565,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         setWsDelete({ cwd: group.cwd, title: group.title, provider: topProvider, others });
       };
 
-      const restoreWorkspace = async (cwd, title) => {
+      const restoreWorkspace = async (cwd, title, provider) => {
         try {
-          const result = await api('/workspaces', { method: 'POST', body: JSON.stringify({ cwd, title }) });
+          const body = { cwd, title };
+          // 撤销 / 手动添加都只对当前助手生效：把这一侧从 hiddenFor 里放出来。
+          if (provider) body.provider = provider;
+          const result = await api('/workspaces', { method: 'POST', body: JSON.stringify(body) });
           if (result.workspaces) applyWorkspaces(result.workspaces);
           showToast('已恢复工作区');
         } catch (error) {
@@ -4574,7 +4583,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         try {
           if (workspaceApi && typeof workspaceApi.pickDirectory === 'function') {
             const picked = await workspaceApi.pickDirectory();
-            if (picked) { await restoreWorkspace(picked); return; }
+            if (picked) { await restoreWorkspace(picked, undefined, topProvider); return; }
             return;
           }
         } catch { /* 没有 native 选择器，走下面的内建列表 */ }
@@ -4586,7 +4595,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         setWsDeleting(true);
         setWsDeleteError('');
         try {
-          const result = await api('/workspaces?cwd=' + encodeURIComponent(wsDelete.cwd), { method: 'DELETE' });
+          const result = await api('/workspaces?cwd=' + encodeURIComponent(wsDelete.cwd)
+            + '&provider=' + encodeURIComponent(wsDelete.provider), { method: 'DELETE' });
           if (result.workspaces) applyWorkspaces(result.workspaces);
           // 不轻信单个响应：再拉一次两个列表，保证左栏与服务端一致
           // （删完工作区后，原来的会话要立刻显示在「未分组」下）。
@@ -4598,9 +4608,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           if (list && list.sessions) setSessions(list.sessions);
           // 删工作区不像归档可以随时再归档一次：给一条「撤销」，用原名字把它加回来。
           const removed = wsDelete;
-          showToast('已从工作台移除「' + removed.title + '」', {
+          const who = providerMeta(removed.provider).label;
+          showToast(result.hidden
+            ? '已从 ' + who + ' 侧移除「' + removed.title + '」；另一侧仍按工作区分组'
+            : '已从工作台移除「' + removed.title + '」', {
             label: '撤销',
-            onClick: () => restoreWorkspace(removed.cwd, removed.title),
+            onClick: () => restoreWorkspace(removed.cwd, removed.title, removed.provider),
           });
           setWsDelete(null);
         } catch (error) {
@@ -5892,7 +5905,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         wsPickerOpen ? h(DirPicker, {
           initial: '',
           onClose: () => setWsPickerOpen(false),
-          onPick: (picked) => { setWsPickerOpen(false); restoreWorkspace(picked); },
+          onPick: (picked) => { setWsPickerOpen(false); restoreWorkspace(picked, undefined, topProvider); },
         }) : null,
         rulesOpen ? h(RulesDialog, {
           cwd: viewSession ? viewSession.cwd : (boot ? boot.defaultCwd : ''),
