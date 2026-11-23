@@ -3070,6 +3070,12 @@ class Workbench {
   }
 }
 
+/* Workbench 本身不是插件入口，但导出给 test/route-test.mjs 用：那边用
+   Object.create(Workbench.prototype) 拼一个最小实例，真走一遍 HTTP 路由。
+   写成 `class Workbench` + 这里单独导出，是为了不改变测试里按
+   「class Workbench」切源码的那几处锚点。 */
+export { Workbench };
+
 export const inject = ['webServer'];
 
 /* 客户端全部卸载后，多久才真正回收插件（等于杀 CLI）。要长于宿主自己的回收延迟，
