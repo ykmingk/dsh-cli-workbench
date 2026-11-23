@@ -137,6 +137,7 @@ token 用量、缓存命中、上下文占用、token 速度不在右侧检查�
 - **选区**：只在 `.cw-scroll` 里响应 `mouseup`；锚点和焦点必须落在**同一条** `.cw-msg` 里（跨条没法归属到某个气泡，CLI 那边也分不清出自哪一条）。空白选区不弹。
 - **浮动按钮**：`fixed` + 选区 `getBoundingClientRect()` 定位，选区太靠顶（<52px）就改到下方；横向做 8px 边界夹紧。点别处、按 Esc、滚动都会收起——`fixed` 不会跟着选区走，留着就是错位的按钮。
 - **输入框是 contenteditable**（`.cw-editor`），不再是 textarea——只有这样才能把引用画成一枚真正的「块」嵌在正文流里。正文的真相仍是字符串 `draft`：`【原文】` 是引用在草稿里的编码，`parseDraft()` 把它切成片段，`syncEditor()` 按片段画成 `.cw-editor-quote`（`“` + 单行截断的原文，`contenteditable=false` + `data-quote`）；用户打字时 `serializeEditor()` 把 DOM 还原回 `【…】` 文本。**只有草稿与 DOM 不一致时才重画**，否则每次输入都会把光标顶走。
+  - 视觉照 DSH composer 截图：引文用链接色 `--dsw-alias-link`（浅色主题 `#4176e6`），**没有底色、边框、圆角**；用户自己的文字仍是正文色，两者在同一行。长的单行省略号截断（`max-width: min(78%, 520px)`）。
 - **插入位置**：点引用时焦点/选区其实在消息那边，所以优先用编辑器里**最后一次记住的光标**（`editorCaretRef`，在 input / keyup / mouseup 时更新），没有才接末尾；插完光标落到引用后面的空格之后。
 - **输入行为**：Enter 发送、Shift+Enter 由浏览器插 `<br>`、序列化成换行；粘贴纯文本强制走 `insertPlainText`（`execCommand('insertText')`，失败再手动插文本节点），图片粘贴仍走附件通道；IME 合成期间不发送。
 - **渲染**：用户气泡里 `【…】` 渲染成 `.cw-quote-inline`（浅底 + 2px 左侧竖线 + 弱化色，`box-decoration-break: clone` 让跨行时两端都有竖线）；老消息里以 `> ` 开头的行仍按 `.cw-quote-block` 渲染，历史不改写。其余一律纯文本，**不**给用户气泡上完整 Markdown（用户写的 `*`、`_` 不该变斜体）。

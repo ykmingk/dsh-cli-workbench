@@ -142,6 +142,11 @@ console.log('\n[4] 接线：contenteditable 输入框 + 内联引用块');
     && srcClient.includes('window.innerWidth - 76') && srcClient.includes('if (quoteSel) setQuoteSel(null)'));
   ok('气泡里有内联引用样式', srcClient.includes('.cw-quote-inline{'));
   ok('引用块的样式（单行截断的小块）', srcClient.includes('.cw-editor-quote{') && srcClient.includes('text-overflow: ellipsis'));
+  /* 形状照 DSH 截图：链接蓝、无底色无边框，后面直接接用户文字 */
+  ok('引用用 DSH 的链接色，不带底色/边框', srcClient.includes('var(--dsw-alias-link') 
+    && /\.cw-editor-quote\{[^}]*\}/.test(srcClient)
+    && !/\.cw-editor-quote\{[^}]*background/.test(srcClient)
+    && !/\.cw-editor-quote\{[^}]*border/.test(srcClient));
 }
 
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');

@@ -1221,14 +1221,14 @@ window.__ModuleLoader__.load({
   white-space: pre-wrap; word-break: break-word;
 }
 .cw-editor:empty::before{ content: attr(data-placeholder); color: var(--cw-placeholder); pointer-events: none; }
-/* 内联引用块：一枚不可编辑的小块，“ + 单行截断的原文，后面可以直接接着打字。
+/* 内联引用块：照 DSH 的样子——“ + 引文用链接蓝，没有底色/边框，后面直接接
+   用户自己的文字（正常正文色）。太长就单行省略号截断。
    注意：这段 CSS 在 String.raw 模板里，注释里不能出现反引号或美元花括号。 */
 .cw-editor-quote{
-  display: inline-flex; align-items: baseline; gap: 2px; max-width: min(70%, 420px);
-  margin-right: 2px; padding: 0 6px 0 4px; border-radius: 5px;
-  background: var(--cw-hover); color: var(--cw-muted); vertical-align: bottom;
+  display: inline-flex; align-items: baseline; gap: 3px; max-width: min(78%, 520px);
+  margin-right: 3px; color: var(--dsw-alias-link, var(--cw-running));
 }
-.cw-editor-quote-mark{ flex: none; color: var(--cw-subtle); font-size: 1.05em; line-height: 1; }
+.cw-editor-quote-mark{ flex: none; color: inherit; line-height: 1; }
 .cw-editor-quote-text{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 底部行至少 34px（发送键高度），且不被 flex 压缩——否则圆角卡会把它裁掉一截。 */
 .cw-input-foot{ flex: none; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 0 0 2px; }
