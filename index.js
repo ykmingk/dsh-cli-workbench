@@ -292,7 +292,7 @@ function npmError(result) {
 
 
 
-function readBody(req) {
+function readBody(req, limit = 4 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
     let bytes = 0;
@@ -307,8 +307,9 @@ function readBody(req) {
     req.on('data', (chunk) => {
       if (settled) return;
       // 按**字节**计：data.length 是 UTF-16 码元数，中文/emoji 实际放行到 8-12MB。
+      // 附件消息要带上 base64 图片/文件，所以调用方可以给更大的上限。
       bytes += chunk.length;
-      if (bytes > 4 * 1024 * 1024) { fail(new Error('body too large')); return; }
+      if (bytes > limit) { fail(new Error('body too large')); return; }
       data += chunk.toString('utf8');
     });
     req.on('end', () => {
@@ -512,6 +513,66 @@ function imageSize(buffer) {
   return null;
 }
 
+/* ------------------------------------------------------------- attachments */
+
+/**
+ * 图片附件允许的媒体类型：与 DSH 的图片附件面一致（png/jpeg/webp/gif）。
+ * 不含 svg——两个 CLI 的图片通道都不收矢量图，硬塞会被当成坏图。
+ */
+const ATTACH_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const ATTACH_MAX_ITEMS = 10;
+const ATTACH_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const ATTACH_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
+
+/** 按文件头核对图片的真实类型：客户端报的 mediaType 不能单独作为依据。 */
+function looksLikeImage(buffer, mediaType) {
+  if (!buffer || buffer.length < 12) return false;
+  if (mediaType === 'image/png') {
+    return buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+  }
+  if (mediaType === 'image/jpeg') {
+    return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (mediaType === 'image/gif') {
+    return buffer.slice(0, 3).toString('ascii') === 'GIF';
+  }
+  if (mediaType === 'image/webp') {
+    return buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP';
+  }
+  return false;
+}
+
+/**
+ * 附件落盘用的文件名：只取 basename，去掉路径分隔符与控制字符。
+ * 附件名来自浏览器（`<input type=file>` 的 name），不可信；最终路径一律
+ * 由 Host 自己拼，用户给的名字只作为可读后缀。
+ */
+function attachmentFileName(raw) {
+  let name = String(raw == null ? '' : raw).replace(/\\/g, '/');
+  name = name.slice(name.lastIndexOf('/') + 1);
+  name = name.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_').trim();
+  // 只掐掉「全是点」的名字（`.` / `..`）；`.env` 这种要原样保留。
+  if (/^\.+$/.test(name)) name = '';
+  name = name.slice(0, 80);
+  if (!name) name = 'attachment';
+  return name;
+}
+
+/**
+ * 附件说明：把落盘路径写进消息正文，CLI 需要内容时自己去读。
+ * Claude 的图片是内联 content block，不必列路径；Codex 连图片也列出来，
+ * 它的图片通道是 `--image`，模型读不到时还能按路径自查。
+ */
+function attachmentNote(attachments, options) {
+  const withImages = Boolean(options && options.images);
+  const rows = (attachments || [])
+    .filter((attachment) => withImages || attachment.kind !== 'image')
+    .map((attachment) => '- ' + attachment.name + (attachment.kind === 'image' ? '（图片）' : '') + '：' + attachment.path);
+  if (!rows.length) return '';
+  return '\n\n【附件】已保存到本机，需要内容时直接读取对应路径：\n' + rows.join('\n');
+}
+
 class Workbench {
   constructor(ctx) {
     this.ctx = ctx;
@@ -533,6 +594,9 @@ class Workbench {
     this.lastState = '';
     this.settingsFile = path.join(this.dir, 'settings.json');
     this.mcpDir = path.join(this.dir, 'mcp');
+    /* 输入框里贴进来的图片 / 选中的文件：按会话落在数据目录下，
+       路径直接写进消息正文（CLI 自己读），不进会话 JSON。 */
+    this.attachmentsDir = path.join(this.dir, 'attachments');
     this.sessions = new Map();
     this.workspaces = new Map();
     this.streams = new Map();
@@ -1309,14 +1373,22 @@ class Workbench {
         return json(res, 200, { ok: true });
       }
       if (action === '/message' && method === 'POST') {
-        const body = await readBody(req);
+        // 附件走 base64 JSON：上限比普通请求大，实际大小在 saveAttachments 里再核。
+        const body = await readBody(req, 40 * 1024 * 1024);
         const content = text(body.text).trim();
-        if (!content) return json(res, 400, { error: 'empty message' });
+        const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
+        if (!content && rawAttachments.length === 0) return json(res, 400, { error: 'empty message' });
         if (session.status === 'running' || session.status === 'waiting') {
           return json(res, 409, { error: '该会话正在运行，先停止或等待完成' });
         }
+        let attachments = [];
+        try {
+          attachments = this.saveAttachments(session, rawAttachments);
+        } catch (error) {
+          return json(res, 400, { error: String((error && error.message) || error) });
+        }
         // 客户端只落 `/技能名` 短令牌，正文在这里展开（与 DSH 的 pre-step 一致）
-        await this.send(session, this.expandSkillTokens(content, session.cwd, session.provider));
+        await this.send(session, this.expandSkillTokens(content, session.cwd, session.provider), attachments);
         return json(res, 200, { ok: true, session: this.publicSession(session) });
       }
       if (action === '/stop' && method === 'POST') {
@@ -1406,6 +1478,32 @@ class Workbench {
       const target = this.safePath(session, text(url.searchParams.get('path')));
       if (!target) return json(res, 403, { error: 'path outside workspace' });
       return json(res, 200, this.preview(target));
+    }
+    if (route === '/attachment' && method === 'GET') {
+      /* 只回放本会话自己落盘的图片（输入框里的缩略图、聊天记录里的预览）。
+         路径由 Host 拼、文件名必须是 basename，且只放行图片扩展名——
+         否则这个端点会退化成「读数据目录里任意文件」的口子。 */
+      const session = this.session(url.searchParams.get('session') || '');
+      if (!session) return json(res, 404, { error: 'session not found' });
+      const file = text(url.searchParams.get('file') || '');
+      if (!file || path.basename(file) !== file) return json(res, 400, { error: 'bad file' });
+      const ext = path.extname(file).toLowerCase();
+      const mime = ext === '.png' ? 'image/png'
+        : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+          : ext === '.gif' ? 'image/gif'
+            : ext === '.webp' ? 'image/webp' : '';
+      if (!mime) return json(res, 403, { error: 'not an image' });
+      let bytes;
+      try { bytes = readFileSync(path.join(this.attachmentsDir, session.id, file)); }
+      catch { return json(res, 404, { error: 'attachment not found' }); }
+      res.writeHead(200, {
+        'content-type': mime,
+        'content-length': bytes.length,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(bytes);
+      return undefined;
     }
     if (route === '/open' && method === 'POST') {
       const body = await readBody(req);
@@ -1554,6 +1652,8 @@ class Workbench {
       rmSync(path.join(this.sessionsDir, session.id + '.json'), { force: true });
       this.serialized.delete(session.id);
     } catch { /* ignore */ }
+    // 会话没了，它落盘的附件也没有读者了（CLI 那边不会再用这个会话）。
+    try { rmSync(path.join(this.attachmentsDir, session.id), { recursive: true, force: true }); } catch { /* ignore */ }
     const set = this.streams.get(session.id);
     if (set) { for (const res of set) { try { res.end(); } catch { /* ignore */ } } this.streams.delete(session.id); }
     this.scheduleSave();
@@ -2182,7 +2282,50 @@ class Workbench {
     return { provider, name: name || path.basename(path.dirname(file)), description, path: file };
   }
 
-  async send(session, content) {
+  /**
+   * 把客户端传上来的附件落盘，返回可直接交给适配器的描述。
+   * 名字、类型、大小全部重新核对：客户端的说法只当线索，磁盘上的字节为准。
+   */
+  saveAttachments(session, list) {
+    if (!Array.isArray(list) || list.length === 0) return [];
+    if (list.length > ATTACH_MAX_ITEMS) throw new Error('附件最多 ' + ATTACH_MAX_ITEMS + ' 个');
+    const dir = path.join(this.attachmentsDir, session.id);
+    mkdirSync(dir, { recursive: true });
+    const saved = [];
+    let total = 0;
+    for (const entry of list) {
+      const encoded = text(entry && entry.data);
+      if (!encoded) continue;
+      const bytes = Buffer.from(encoded, 'base64');
+      if (!bytes.length) continue;
+      const name = attachmentFileName(entry.name);
+      const declared = text(entry.mediaType).toLowerCase();
+      const image = ATTACH_IMAGE_TYPES.has(declared) && looksLikeImage(bytes, declared);
+      const limit = image ? ATTACH_MAX_IMAGE_BYTES : ATTACH_MAX_FILE_BYTES;
+      if (bytes.length > limit) {
+        throw new Error('「' + name + '」太大（' + (bytes.length / 1024 / 1024).toFixed(1) + 'MB，上限 '
+          + Math.round(limit / 1024 / 1024) + 'MB）');
+      }
+      total += bytes.length;
+      if (total > ATTACH_MAX_TOTAL_BYTES) {
+        throw new Error('附件合计超过 ' + Math.round(ATTACH_MAX_TOTAL_BYTES / 1024 / 1024) + 'MB，请分批发。');
+      }
+      const file = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + '-' + name;
+      const target = path.join(dir, file);
+      writeFileSync(target, bytes);
+      saved.push({
+        kind: image ? 'image' : 'file',
+        name,
+        file,
+        mediaType: image ? declared : (declared || 'application/octet-stream'),
+        size: bytes.length,
+        path: target,
+      });
+    }
+    return saved;
+  }
+
+  async send(session, content, attachments = []) {
     session.error = null;
     session.status = 'running';
     session._turnActive = true;
@@ -2193,8 +2336,24 @@ class Workbench {
     if (session._interruptTimer) { clearTimeout(session._interruptTimer); session._interruptTimer = null; }
     session._turnTiming = { decodeMs: 0, ttftMs: null, blockStart: null };
     const title = session.title === '新会话' || !session.title;
-    if (title) session.title = oneLine(content, 36);
-    this.push(session, { id: idOf('user'), kind: 'user', text: content, at: now() });
+    if (title) {
+      const first = text(content).trim()
+        || (attachments.length ? (attachments[0].kind === 'image' ? '图片：' : '附件：') + attachments[0].name : '');
+      session.title = oneLine(first, 36) || '新会话';
+    }
+    this.push(session, {
+      id: idOf('user'),
+      kind: 'user',
+      text: content,
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        kind: attachment.kind,
+        file: attachment.file,
+        mediaType: attachment.mediaType,
+        size: attachment.size,
+      })),
+      at: now(),
+    });
     this.sessionEvent(session);
     if (session.provider === 'claude') {
       try {
@@ -2208,7 +2367,11 @@ class Workbench {
         }
         child.stdin.write(JSON.stringify({
           type: 'user',
-          message: { role: 'user', content: [{ type: 'text', text: content }] },
+          message: {
+            role: 'user',
+            // 图片作为 image content block 随消息内联；文件只给落盘路径，由 CLI 自己读。
+            content: claudeAdapter.buildUserContent(content + attachmentNote(attachments), attachments),
+          },
         }) + '\n');
       } catch (error) {
         this.failTurn(session, '启动', 'CLI 进程启动失败', String(error));
@@ -2218,7 +2381,9 @@ class Workbench {
     // A codex turn may wait for the sandbox probe before spawning; tag it so a
     // stop-then-resend race cannot spawn the previous turn's process.
     const seq = session._turnSeq = (session._turnSeq || 0) + 1;
-    this.startCodex(session, content, seq).catch((error) => {
+    // 图片另走 `codex exec --image`：Codex 的 prompt 里读不到图片字节，
+    // 所以正文只补上所有附件的路径，图片同时作为附件参数传过去。
+    this.startCodex(session, content + attachmentNote(attachments, { images: true }), seq, attachments).catch((error) => {
       this.failTurn(session, '启动', '无法启动 codex', String(error));
     });
   }

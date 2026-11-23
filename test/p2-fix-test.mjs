@@ -1,4 +1,4 @@
-﻿/**
+/**
  * P2 修复验证。静态断言 + 对可抽取的函数做真实执行。
  */
 import fs from 'node:fs';
@@ -83,7 +83,7 @@ ok('P2-3 全选改用可见集合', srcClient.includes('selectAll(selectable)') 
 ok('P2-4 批量删除逐条 try', srcClient.includes("catch (error) { failed.push({ id, message: error.message }); }"));
 
 // P2-5 首条消息失败回填草稿
-ok('P2-5 建会话失败回填草稿', srcClient.includes('if (!created) setDraft(composed)'));
+ok('P2-5 建会话失败回填草稿', srcClient.includes('if (!created) {') && srcClient.includes('setDraft(composed);'));
 ok('P2-5 首条消息失败回填草稿', srcClient.includes('setDraft(prompt);'));
 
 // P2-6 内联组件改渲染函数

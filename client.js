@@ -6,6 +6,12 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const API = '/cli-workbench/api';
+    /* 输入框附件：与 Host 的附件白名单/上限保持一致，先在客户端拦一道，
+       免得把一个 300MB 的文件读进内存再被服务端拒绝。 */
+    const ATTACH_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    const ATTACH_MAX_IMAGES = 10;
+    const ATTACH_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+    const ATTACH_MAX_FILE_BYTES = 20 * 1024 * 1024;
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -246,6 +252,8 @@ window.__ModuleLoader__.load({
       panel: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M10 2.5v11"/>',
       task: '<rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M5 8l2 2 4-4"/>',
       image: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.8" cy="6" r="1.3"/><path d="M2.5 12l3.2-3.2 2.3 2.3 2-2 3.5 3.4"/>',
+      /* 加号：DSH composer 的附件按钮用的就是这个 14px 描边十字 */
+      plus: '<path d="M8 3.2v9.6M3.2 8h9.6"/>',
       globe: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>',
       back: '<path d="M9.5 3.5L5 8l4.5 4.5"/>',
       forward: '<path d="M6.5 3.5L11 8l-4.5 4.5"/>',
@@ -785,6 +793,19 @@ window.__ModuleLoader__.load({
   font-size: var(--cw-fs-base); line-height: var(--cw-lh-base);
   white-space: pre-wrap; word-break: break-word;
 }
+/* 用户消息里的附件：图片直接给缩略图（Host 的 /attachment 端点回放），
+   文件给一枚小胶囊。都靠右，和气泡同一列。 */
+.cw-msg-atts{ display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-bottom: 6px; }
+.cw-msg-att-img{
+  width: 120px; height: 120px; object-fit: cover; border-radius: var(--cw-radius-md);
+  border: .5px solid var(--cw-border-2); background: var(--cw-hover);
+}
+.cw-msg-att-file{
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+  border-radius: var(--cw-radius-pill); background: var(--cw-hover);
+  color: var(--cw-muted); font-size: var(--cw-fs-xs);
+}
+.cw-msg-att-file .cw-ic{ width: 14px; height: 14px; color: var(--cw-subtle); }
 .cw-assist{
   font-size: var(--cw-fs-base); line-height: var(--cw-lh-body);
   color: var(--cw-text); word-break: break-word;
@@ -1062,6 +1083,44 @@ window.__ModuleLoader__.load({
 }
 .cw-tool:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-tool[disabled]{ color: var(--cw-placeholder); }
+/* 附件按钮：跟 DSH composer 的加号同一个样子——28px 圆、selector 底、primary 字形。
+   点开系统文件选择器；图片也可以直接粘贴或拖进输入卡。 */
+.cw-add{
+  width: 28px; height: 28px; flex: none; display: inline-grid; place-items: center; padding: 0;
+  border-radius: 999px; background: var(--dsw-specific-selector, var(--cw-hover));
+  color: var(--dsw-alias-label-primary, var(--cw-text));
+}
+.cw-add:hover:not([disabled]){ background: var(--dsw-alias-interactive-bg-hover-solid, var(--cw-hover)); }
+.cw-add[disabled]{ opacity: .5; }
+.cw-add .cw-ic{ width: 14px; height: 14px; }
+/* 草稿里的附件：贴在输入框上方。图片 64px 方块（DSH 的缩略图尺寸），
+   文件是一枚带名字和大小的小卡片；右上角 × 移除。 */
+.cw-attachrail{ display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 10px 2px; }
+.cw-attach-img{ position: relative; width: 64px; height: 64px; flex: none; }
+.cw-attach-img img{
+  display: block; width: 100%; height: 100%; object-fit: cover;
+  border: .5px solid var(--cw-border-2); border-radius: var(--cw-radius-md);
+  background: var(--cw-hover);
+}
+.cw-attach-x{
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+  display: grid; place-items: center; border-radius: 999px;
+  background: var(--dsw-alias-button-contrast-fill, rgba(0, 0, 0, .62));
+  color: var(--dsw-alias-label-primary-inverted, #fff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .28);
+}
+.cw-attach-x .cw-ic{ width: 10px; height: 10px; }
+.cw-attach-file{
+  position: relative; display: inline-flex; align-items: center; gap: 8px; height: 44px; flex: none;
+  padding: 0 30px 0 10px; border-radius: var(--cw-radius-md);
+  background: var(--cw-hover); color: var(--cw-text); font-size: var(--cw-fs-xs);
+}
+.cw-attach-file .cw-ic{ width: 16px; height: 16px; flex: none; color: var(--cw-subtle); }
+.cw-attach-name{ max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-attach-size{ color: var(--cw-subtle); font-variant-numeric: tabular-nums; }
+.cw-attach-file .cw-attach-x{ top: 50%; right: 6px; margin-top: -9px; }
+/* 拖文件进来：整张输入卡描一圈虚线（DSH 是全屏遮罩，这里输入卡本身就是目标） */
+.cw-inputbox.is-drag{ outline: 1.5px dashed var(--cw-accent-ink, var(--cw-running)); outline-offset: -6px; }
 /* 带文字的胶囊按钮（技能 / 计划）：图标 + 文字，32px 高，跟 DS H 菜单那一排一致。
    图标 18px、细描边、与文字垂直居中。 */
 .cw-pillbtn{
@@ -3903,6 +3962,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const [fileRef, setFileRef] = useState('');
       /* 已引用的技能：输入框里只留 `/名字` 短令牌，卡片显示名字，正文由 Host 补 */
       const [skillRefs, setSkillRefs] = useState([]);
+      /* 附件（粘贴的图片、选中的文件）跟草稿一样按会话分开存：
+         切到别的会话不该把上一个会话的图带过去。 */
+      const [attachMap, setAttachMap] = useState({});
+      const attachments = attachMap[draftKey] || [];
+      const setAttachments = (updater) => setAttachMap((current) => {
+        const previous = current[draftKey] || [];
+        const next = typeof updater === 'function' ? updater(previous) : updater;
+        if (next === previous) return current;
+        return { ...current, [draftKey]: next };
+      });
       const [picker, setPicker] = useState(null);
       const [menu, setMenu] = useState(null);
       const [width, setWidth] = useState(1200);
@@ -3911,6 +3980,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const rootRef = useRef(null);
       const scrollRef = useRef(null);
       const textareaRef = useRef(null);
+      const fileInputRef = useRef(null);
+      const [dragging, setDragging] = useState(false);
       const modelMenuRef = useRef(null);
 
       /* 模型浮层相对模型按钮居中：按钮很小、浮层很宽（533px 起），
@@ -4378,10 +4449,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
              再同步调到这里时，闭包里的 pendingPrompt 还是上一轮的旧值——
              表现就是「空态直接发送，会话建了但消息没发出去」。 */
           const prompt = options && typeof options.prompt === 'string' ? options.prompt : pendingPrompt;
+          const promptAttachments = options && Array.isArray(options.attachments) ? options.attachments : [];
           setPendingPrompt('');
-          if (prompt) {
+          if (prompt || promptAttachments.length) {
             try {
-              await api('/sessions/' + result.session.id + '/message', { method: 'POST', body: JSON.stringify({ text: prompt }) });
+              await api('/sessions/' + result.session.id + '/message', {
+                method: 'POST',
+                body: JSON.stringify({ text: prompt, attachments: wireAttachments(promptAttachments) }),
+              });
             } catch (error) {
               // 会话建好了但首条消息没发出去：把内容放回输入框，别让用户重打一遍。
               setDraft(prompt);
@@ -4527,31 +4602,105 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         : '【计划模式】先别动手：列出一份分步骤计划（要改哪些文件、每步做什么、风险），'
           + '等我确认后再执行；这一轮不要修改文件。\n\n');
 
+      /**
+       * 把浏览器里的 File 读成 base64（不带 data: 前缀）；图片顺手留一份 data URL
+       * 给草稿里的缩略图。读失败要说明原因，不能静默丢。
+       */
+      const readAttachment = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读不到「' + (file.name || '附件') + '」'));
+        reader.onload = () => {
+          const result = String(reader.result || '');
+          const comma = result.indexOf(',');
+          resolve({ data: comma >= 0 ? result.slice(comma + 1) : result, dataUrl: result });
+        };
+        reader.readAsDataURL(file);
+      });
+
+      /** 添加附件：图片有数量/大小上限，其它文件只限单个大小（Host 还会再核一遍）。 */
+      const addFiles = async (fileList) => {
+        const files = Array.from(fileList || []).filter(Boolean);
+        if (!files.length) return;
+        const accepted = [];
+        let imageCount = attachments.filter((item) => item.kind === 'image').length;
+        for (const file of files) {
+          const mediaType = String(file.type || '').toLowerCase();
+          const isImage = ATTACH_IMAGE_TYPES.has(mediaType);
+          if (isImage && imageCount >= ATTACH_MAX_IMAGES) {
+            showToast('一次最多附 ' + ATTACH_MAX_IMAGES + ' 张图片');
+            break;
+          }
+          const limit = isImage ? ATTACH_MAX_IMAGE_BYTES : ATTACH_MAX_FILE_BYTES;
+          if (file.size > limit) {
+            showToast('「' + (file.name || '附件') + '」超过 ' + Math.round(limit / 1024 / 1024) + 'MB，没有添加');
+            continue;
+          }
+          try {
+            const read = await readAttachment(file);
+            accepted.push({
+              id: 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+              kind: isImage ? 'image' : 'file',
+              name: file.name || (isImage ? '图片' : '附件'),
+              mediaType: isImage ? mediaType : (mediaType || 'application/octet-stream'),
+              size: file.size,
+              data: read.data,
+              previewUrl: isImage ? read.dataUrl : '',
+            });
+            if (isImage) imageCount += 1;
+          } catch (error) {
+            showToast(error.message);
+          }
+        }
+        if (accepted.length) setAttachments((current) => [...current, ...accepted]);
+      };
+
+      const removeAttachment = (id) => setAttachments((current) => current.filter((item) => item.id !== id));
+
+      /** 发给 Host 的线上形态：只带名字/类型/字节；kind 由 Host 按文件头复核。 */
+      const wireAttachments = (list) => (list || []).map((item) => ({
+        name: item.name,
+        mediaType: item.mediaType,
+        data: item.data,
+      }));
+
       const send = async (override) => {
         // 没有会话时直接发 = 用顶部选中的助手建一个会话，并把这句话作为第一句：
         // 不再跳一层「先新建会话」对话框（那正是「点新建却建出另一个 CLI」的来源）。
         if (!currentId || !viewSession) {
           const body = (override == null ? draft : override).trim();
-          if (!body) return;
+          if (!body && !attachments.length) return;
           const plan = planMode ? planPrefix(topProvider) : '';
           const composed = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+          /* 图片/文件先跟着首条消息走：会话建好之后才有附件目录，
+             所以这里把内容一起交给 createSession，由它在建好后发出去。 */
+          const pendingAttachments = attachments;
           setPendingPrompt(composed);
           setDraft('');
           setFileRef('');
           setSkillRefs([]);
+          setAttachments([]);
           setPlanMode(false);
-          const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''), { prompt: composed });
-          // 建会话失败时把原文放回输入框：原来草稿已经清空，长文本就此静默丢失。
-          if (!created) setDraft(composed);
+          const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''), {
+            prompt: composed,
+            attachments: pendingAttachments,
+          });
+          // 建会话失败时把原文和附件放回去：原来草稿已经清空，长文本就此静默丢失。
+          if (!created) {
+            setDraft(composed);
+            setAttachments(pendingAttachments);
+          }
           return;
         }
         const body = (override == null ? draft : override).trim();
-        if (!body) return;
+        if (!body && !attachments.length) return;
         const plan = planMode ? planPrefix(topProvider) : '';
         const content = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
         try {
-          await api('/sessions/' + currentId + '/message', { method: 'POST', body: JSON.stringify({ text: content }) });
-          if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); }
+          await api('/sessions/' + currentId + '/message', {
+            method: 'POST',
+            body: JSON.stringify({ text: content, attachments: wireAttachments(attachments) }),
+          });
+          if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); setAttachments([]); }
           // 计划只对下一条消息有效：发出去就复位，免得下一条还带着旧指令
           if (planMode) { setPlanMode(false); showToast('计划指令已随这条消息发出，计划模式已关'); }
           refreshSessions();
@@ -5132,9 +5281,26 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           if (!item || !item.kind) { index += 1; continue; }
           if (item.kind === 'user') {
             // data-msg 是右侧轮次条的锚点：点刻度就滚到这里
+            const atts = Array.isArray(item.attachments) ? item.attachments : [];
+            const attSession = viewSession ? viewSession.id : '';
             nodes.push(h('div', { key: item.id || index, className: 'cw-msg cw-msg-user', 'data-msg': item.id || '' },
               h('div', { className: 'cw-msg-label' }, '你 · ' + (timeAgo(item.at) || '刚刚')),
-              h('div', { className: 'cw-bubble-user' }, item.text || ''),
+              atts.length ? h('div', { className: 'cw-msg-atts' }, atts.map((att, attIndex) => (
+                att.kind === 'image' && att.file
+                  ? h('img', {
+                    key: att.file || attIndex,
+                    className: 'cw-msg-att-img',
+                    /* 图片由 Host 的 /attachment 端点回放：路径在数据目录里，
+                       /fs/file 的边界只放行会话工作目录，读不到这里。 */
+                    src: API + '/attachment?session=' + encodeURIComponent(attSession) + '&file=' + encodeURIComponent(att.file),
+                    alt: att.name || '图片',
+                    title: att.name || '图片',
+                  })
+                  : h('span', { key: att.file || att.name || attIndex, className: 'cw-msg-att-file', title: att.name || '' },
+                    h(Icon, { name: 'file', size: 14 }),
+                    h('span', { className: 'cw-attach-name' }, att.name || '附件'))
+              ))) : null,
+              item.text ? h('div', { className: 'cw-bubble-user' }, item.text) : null,
             ));
             index += 1;
             continue;
@@ -5380,7 +5546,49 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             h('div', { className: 'cw-dock' },
               /* 任务清单在输入卡上方——DSH 的 conversation.input.dock 就是这个地方 */
               viewSession && dockTodos ? h(TodoCard, { todos: dockTodos }) : null,
-              h('div', { className: 'cw-inputbox' },
+              h('div', {
+                className: 'cw-inputbox' + (dragging ? ' is-drag' : ''),
+                /* 拖文件进来：与 DSH 的 drop 目标同一套语义，只是范围收在输入卡上 */
+                onDragOver: (event) => {
+                  const types = event.dataTransfer && event.dataTransfer.types;
+                  if (!types || Array.from(types).indexOf('Files') < 0) return;
+                  event.preventDefault();
+                  if (!dragging) setDragging(true);
+                },
+                onDragLeave: (event) => {
+                  if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
+                  setDragging(false);
+                },
+                onDrop: (event) => {
+                  if (!event.dataTransfer) return;
+                  event.preventDefault();
+                  setDragging(false);
+                  addFiles(event.dataTransfer.files);
+                },
+              },
+                attachments.length ? h('div', { className: 'cw-attachrail' }, attachments.map((item) => (
+                  item.kind === 'image'
+                    ? h('div', { key: item.id, className: 'cw-attach-img' },
+                      h('img', { src: item.previewUrl, alt: item.name, title: item.name }),
+                      h('button', {
+                        type: 'button',
+                        className: 'cw-attach-x',
+                        title: '移除这张图片',
+                        'aria-label': '移除 ' + item.name,
+                        onClick: () => removeAttachment(item.id),
+                      }, h(Icon, { name: 'x', size: 10 })))
+                    : h('div', { key: item.id, className: 'cw-attach-file' },
+                      h(Icon, { name: 'file', size: 16 }),
+                      h('span', { className: 'cw-attach-name', title: item.name }, item.name),
+                      h('span', { className: 'cw-attach-size' }, fmtBytes(item.size)),
+                      h('button', {
+                        type: 'button',
+                        className: 'cw-attach-x',
+                        title: '移除这个文件',
+                        'aria-label': '移除 ' + item.name,
+                        onClick: () => removeAttachment(item.id),
+                      }, h(Icon, { name: 'x', size: 10 })))
+                ))) : null,
                 h('textarea', {
                   ref: textareaRef,
                   value: draft,
@@ -5390,6 +5598,26 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     const element = event.target;
                     element.style.height = 'auto';
                     element.style.height = Math.min(336, element.scrollHeight) + 'px';
+                  },
+                  /* 截图/复制的图片直接贴进输入框：把剪贴板里的 file item 变成附件，
+                     不让它退化成一段乱码文本（DSH 的 composer 也是这么接的）。 */
+                  onPaste: (event) => {
+                    const data = event.clipboardData;
+                    if (!data) return;
+                    const files = [];
+                    if (data.items) {
+                      for (const item of data.items) {
+                        if (item.kind !== 'file') continue;
+                        const file = item.getAsFile();
+                        if (file) files.push(file);
+                      }
+                    }
+                    if (!files.length && data.files) {
+                      for (const file of data.files) files.push(file);
+                    }
+                    if (!files.length) return;
+                    event.preventDefault();
+                    addFiles(files);
                   },
                   onKeyDown: (event) => {
                     // 中文输入法按 Enter 是「确认候选词」，此时 keydown 仍会到这里。
@@ -5405,6 +5633,25 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                 }),
                 h('div', { className: 'cw-input-foot' },
                   h('div', { className: 'cw-input-tools' },
+                    /* 附件：系统文件选择器。样式跟 DSH 的加号一致（28px 圆、selector 底）。 */
+                    h('input', {
+                      ref: fileInputRef,
+                      type: 'file',
+                      multiple: true,
+                      hidden: true,
+                      onChange: (event) => {
+                        const list = event.target.files;
+                        event.target.value = '';
+                        addFiles(list);
+                      },
+                    }),
+                    h('button', {
+                      type: 'button',
+                      className: 'cw-add',
+                      title: '添加图片或文件（也可以直接粘贴、拖进来）',
+                      'aria-label': '添加图片或文件',
+                      onClick: () => { if (fileInputRef.current) fileInputRef.current.click(); },
+                    }, h(Icon, { name: 'plus', size: 14 })),
                     /* 文件 / 斜杠命令：各自一个锚点容器，浮层贴在按钮上沿。
                        没有会话时置灰：引用文件要跟着一个工作目录走，必须先有会话。
                        title 说明原因——灰按钮没解释会被当成「坏了」。 */
@@ -5493,8 +5740,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     : h('button', {
                       className: 'cw-send',
                       onClick: () => send(),
-                      disabled: !draft.trim(),
-                      title: ['发送（Enter）', ...(draft.trim() ? [] : [' · 先写任务'])].join(''),
+                      disabled: !draft.trim() && attachments.length === 0,
+                      title: ['发送（Enter）', ...(draft.trim() || attachments.length ? [] : [' · 先写任务或加个附件'])].join(''),
                       'aria-label': '发送',
                     }, h(Icon, { name: 'send', size: 16 })),
                 ),
