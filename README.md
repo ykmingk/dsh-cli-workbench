@@ -178,7 +178,7 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 
 DSH 的插件页只对「插件市场条目」和「npm 包」检查版本，从仓库地址装的插件它不会提示。
 所以插件自己查：打开 **设置 → CLI 版本与升级**，第一行就是「CLI 工作台」本身的版本，
-有新版本时显示 `当前 v1.0.40 → v1.0.41`。
+有新版本时显示 `当前 v1.0.41 → v1.0.42`。
 
 - **点「立即升级」即可**：Host 会用当初那条安装命令把新版本装上，装完提示重启 DSH；
 - 也可以手动重跑安装命令，见「安装 → 之后的升级」；
@@ -225,6 +225,8 @@ DSH 的插件页只对「插件市场条目」和「npm 包」检查版本，从
 **归档 ≠ 删除**：归档只是从列表收起来，CLI 的记录仍然保留，随时可以用 `claude --resume` / `codex resume` 接上。
 
 两个 CLI 自己也有清理策略：Claude Code 默认只保留 **30 天**的转录（`cleanupPeriodDays`，可在 `~/.claude/settings.json` 调整）；Codex 没有对应的自动清理，所以工作台删除时会主动删。以本机为例，60 个 Claude 转录约 11.5MB、64 个 Codex rollout 约 7.3MB——单条会话通常几百 KB 到 1MB 出头，长期不清理才会明显涨。
+
+想看当前占了多少：**设置 → 数据存放位置**，路径下面一行就是 `CLI 记录占用：Claude 11.5 MB（63 个）· Codex 7.3 MB（64 个）· 附件 0.8 MB`。打开设置时查一次，Host 侧缓存 5 分钟；统计最多数 2 万个文件，不会因为会话太多把设置面板卡住。
 
 它**不**写 `~/.claude/settings.json`、`~/.codex/config.toml`，也不配置 API Key、Base URL 或代理——那些仍然是你 CLI 自己的事。
 

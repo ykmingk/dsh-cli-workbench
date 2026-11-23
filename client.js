@@ -3048,6 +3048,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       /* 自动升级的进行状态：null / {phase:'running'} / {phase:'done', ok, error} */
       const [selfUpgrade, setSelfUpgrade] = useState(null);
       const [selfBusy, setSelfBusy] = useState(false);
+      /* CLI 记录占用：打开设置时查一次（Host 侧扫目录并缓存 5 分钟）。 */
+      const [disk, setDisk] = useState(null);
+      const [diskFailed, setDiskFailed] = useState(false);
+      useEffect(() => {
+        let alive = true;
+        api('/disk')
+          .then((value) => { if (alive) setDisk(value); })
+          .catch(() => { if (alive) setDiskFailed(true); });
+        return () => { alive = false; };
+      }, []);
       const checkSelf = useCallback(async (force) => {
         setSelfBusy(true);
         try {
@@ -3297,6 +3307,15 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               boot && boot.dataDir
                 ? h('div', { className: 'cw-set-note cw-set-path' }, boot.dataDir)
                 : null,
+              /* CLI 自己的转录不在插件数据目录里，但同样占 C 盘，顺手给一行读数。
+                 删除会话会连它们一起删（Claude 另有 30 天自动清理）。 */
+              h('div', { className: 'cw-set-note' },
+                disk && disk.claude && disk.codex
+                  ? 'CLI 记录占用：Claude ' + fmtBytes(disk.claude.bytes) + '（' + disk.claude.files + ' 个）· Codex '
+                    + fmtBytes(disk.codex.bytes) + '（' + disk.codex.files + ' 个）'
+                    + (disk.attachments && disk.attachments.files ? ' · 附件 ' + fmtBytes(disk.attachments.bytes) : '')
+                  : diskFailed ? 'CLI 记录占用：暂时读不到' : 'CLI 记录占用：统计中…'),
+              h('div', { className: 'cw-set-note' }, '删除会话会一起清掉对应记录；Claude 默认只保留 30 天。'),
               boot && boot.storage && boot.storage.saveError
                 ? h('div', { className: 'cw-set-note', style: { color: 'var(--cw-danger, #d9534f)' } },
                   '最近一次写盘失败：' + boot.storage.saveError + '（改动可能没有保存到磁盘）')

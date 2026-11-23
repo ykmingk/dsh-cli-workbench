@@ -595,6 +595,31 @@ function codexSessionArg(input) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : '';
 }
 
+/**
+ * 递归统计若干目录里的文件数与字节数（设置面板的「CLI 记录占用」读数）。
+ * 有 2 万个文件的上限：会话攒到几万条时也不能让一次请求把事件循环拖住；
+ * 不跟符号链接/联接点，避免递归绕圈或统计到别的盘。
+ */
+function scanTree(dirs, limit = 20000) {
+  const result = { files: 0, bytes: 0, truncated: false };
+  const walk = (dir) => {
+    if (result.truncated) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (result.files >= limit) { result.truncated = true; return; }
+      if (entry.isDirectory()) { walk(path.join(dir, entry.name)); continue; }
+      if (!entry.isFile()) continue;
+      try {
+        result.files += 1;
+        result.bytes += statSync(path.join(dir, entry.name)).size;
+      } catch { /* 文件被占用或已删除：跳过 */ }
+    }
+  };
+  for (const dir of dirs || []) walk(dir);
+  return result;
+}
+
 class Workbench {
   constructor(ctx) {
     this.ctx = ctx;
@@ -637,6 +662,8 @@ class Workbench {
     // MCP 桥脚本的绝对路径：以 index.js 为基准算出来的，适配器通过实例取用
     this.mcpScript = MCP_SCRIPT;
     this.statusCache = { at: 0, value: null };
+    // 「CLI 记录占用」的扫描结果（5 分钟缓存，见 diskUsage）
+    this.diskCache = null;
     this.updateCache = { at: 0, value: null };
     // npm 是否存在（缓存）：只影响「查最新版 / 升级」，不影响任何使用功能
     this.npmCache = null;
@@ -1231,6 +1258,10 @@ class Workbench {
     }
     if (route === '/status' && method === 'GET') {
       return json(res, 200, await this.status());
+    }
+    if (route === '/disk' && method === 'GET') {
+      // 只报大小与个数，不列文件名：设置面板只要一行读数。
+      return json(res, 200, this.diskUsage());
     }
     if (route === '/settings' && method === 'GET') {
       return json(res, 200, this.settings);
@@ -1875,6 +1906,25 @@ class Workbench {
       },
     };
     this.statusCache = { at: now(), value };
+    return value;
+  }
+
+  /**
+   * CLI 自身的记录占用（设置面板「数据存放位置」下的一行读数）。
+   * 缓存 5 分钟：会话跑起来后大小在变，但没必要每开一次设置都把几万文件数一遍。
+   */
+  diskUsage() {
+    if (this.diskCache && now() - this.diskCache.at < 5 * 60 * 1000) return this.diskCache.value;
+    const codexDir = path.join(os.homedir(), '.codex');
+    const value = {
+      claude: { ...scanTree([claudeProjectsDir()]), dir: claudeProjectsDir() },
+      codex: {
+        ...scanTree([path.join(codexDir, 'sessions'), path.join(codexDir, 'archived_sessions')]),
+        dir: path.join(codexDir, 'sessions'),
+      },
+      attachments: { ...scanTree([this.attachmentsDir]), dir: this.attachmentsDir },
+    };
+    this.diskCache = { at: now(), value };
     return value;
   }
 

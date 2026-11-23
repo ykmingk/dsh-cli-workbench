@@ -217,6 +217,7 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 
 - 会话记录保存在当前 DSH profile 的数据目录：`cli-workbench/state.json`（工作区清单）+ `cli-workbench/sessions/<会话 id>.json`（一个会话一个文件），只在本机。
 - 输入框里的图片与文件存放在 `cli-workbench/attachments/<会话 id>/`，文件名由 Host 重新生成（用户给的名字只作可读后缀，路径分隔符会被抹掉）；删会话时这个目录一起删。聊天记录里只存名字、类型、大小，不重复存字节。
+- **设置 → 数据存放位置**会显示一行 `CLI 记录占用`（Claude / Codex / 附件各多少 MB、多少个文件）。打开设置时统计一次，Host 缓存 5 分钟，最多数 2 万个文件；只读，不删任何文件。
 - **删除会话会连 CLI 的记录一起删**：Claude 是 `~/.claude/projects/<目录编码>/<会话 id>.jsonl` 与同名 `tool-results/` 目录（CLI 没有删除命令，Host 按 id 精确删）；Codex 是 `codex delete --force <uuid>`（非交互环境必须 `--force`，否则它只报「需要交互终端确认」）。**归档只是从列表收起**，CLI 记录保留，仍可 `claude --resume` / `codex resume`。
 - 一个会话一个文件的好处：改一个会话只重写它自己那份；某个文件损坏只影响那一个会话，不会像单文件那样整份读不出来。旧版本的 `sessions.json` 会在升级时自动迁移，并改名成 `sessions.json.migrated-<时间>` 保留，随时可以改回去。
 - CLI 进程由本机 `claude` / `codex` 可执行文件启动，环境变量沿用当前 DSH 进程；不会上传会话内容到第三方。
