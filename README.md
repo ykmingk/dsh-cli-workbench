@@ -24,7 +24,7 @@
 
 ### 前提
 
-1. 已安装 **DSH 桌面版**（本插件要求 `engines.dsh` 在 `>=0.2.2-rc.3 <0.3.0` 之间）。
+1. 已安装 **DSH 桌面版**（本插件要求 `engines.dsh` 在 `>=0.2.2-rc.5 <0.3.0` 之间）。
 2. 本机装有 **Git**，命令行里能运行 `git --version`（按仓库地址安装时 DSH 会先探测仓库）。
 3. 本机已安装并登录 **Claude Code**（`claude` 命令可用）或 **Codex**（`codex` 命令可用）——至少一个。
 
@@ -71,7 +71,7 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 
 | 项 | 要求 |
 |---|---|
-| DSH | `>=0.2.2-rc.3 <0.3.0`（由 `package.json` 的 `engines.dsh` 声明，版本不符会被直接挡下） |
+| DSH | `>=0.2.2-rc.5 <0.3.0`（由 `package.json` 的 `engines.dsh` 声明，版本不符会被直接挡下） |
 | 平台 | Windows（10/11）。插件用 `explorer.exe` 打开文件夹、用 `cmd.exe` 拉起 CLI；macOS / Linux 未适配 |
 | CLI | 本机需已安装并登录 `claude`（Claude Code）或 `codex`（Codex），至少一个 |
 | npm | **可选**。只有「检查最新版本」和「用 npm 升级」会用到；没有 npm 时改用 CLI 自带的 `update` |
@@ -147,7 +147,7 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 
 探测是**运行时**做的，不写死版本号：小版本升级只要参数没变就照常工作，不需要改代码。
 
-本插件开发与实测环境：**DSH 0.2.2-rc.3 / Claude Code 2.1.328 / Codex 0.170.0 / Windows 10 19045**。
+本插件开发与实测环境：**DSH 0.2.2-rc.5 / Claude Code 2.1.330 / Codex 0.171.0 / Windows 10 19045**。
 
 > macOS 与 Linux 未验证。Windows 之外的平台按 `codex doctor` 的原生结果处理，未做适配测试。
 

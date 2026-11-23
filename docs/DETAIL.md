@@ -200,11 +200,11 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 
 插件背后是三个会独立升级的组件，任一升级都可能改变它依赖的接口：
 
-- **DSH**：`package.json` 声明 `engines.dsh = ">=0.2.2-rc.3 <0.3.0"`，不满足时安装/启用会被 DSH 挡下并说明原因，不会装上一个跑不起来的插件。
+- **DSH**：`package.json` 声明 `engines.dsh = ">=0.2.2-rc.5 <0.3.0"`，不满足时安装/启用会被 DSH 挡下并说明原因，不会装上一个跑不起来的插件。
 - **Claude Code**：启动时核对 9 个必需参数（`--output-format`、`--input-format`、`--verbose`、`--permission-mode`、`--permission-prompts`、`--permission-prompt-tool`、`--include-partial-messages`、`--mcp-config`、`--resume`）。
 - **Codex**：核对 6 个必需参数与 3 个可选参数（`archive` / `unarchive` / `delete`，缺失只降级为软归档），并单独探测 Windows 沙箱后端。
 
-当前实测通过：DSH `0.2.2-rc.3`、Claude Code `2.1.328`、Codex `0.170.0`。探测在**运行时**做，参数没变的小版本升级无需改代码；缺参数时「设置 → CLI 版本与升级」标红列出缺项，打开工作台时提示一次。完整矩阵见仓库根目录的 `COMPATIBILITY.md`。
+当前实测通过：DSH `0.2.2-rc.5`、Claude Code `2.1.330`、Codex `0.171.0`。探测在**运行时**做，参数没变的小版本升级无需改代码；缺参数时「设置 → CLI 版本与升级」标红列出缺项，打开工作台时提示一次。完整矩阵见仓库根目录的 `COMPATIBILITY.md`。
 
 ## 数据与隐私
 
