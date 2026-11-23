@@ -17,9 +17,31 @@ window.__ModuleLoader__.load({
        上限把人挡回来。 */
     const ATTACH_MAX_ITEMS = 10;
     const ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
-    /* 引用：一次最多 5 段、每段最多 2000 字（超了截断并提示）。 */
-    const QUOTE_MAX_ITEMS = 5;
+    /* 引用：一段引用最多 2000 字（超了截断并提示），插入草稿时用【】包起来，
+   跟正文一起可编辑、可删除——不再在输入框上方堆 chip。 */
     const QUOTE_MAX_CHARS = 2000;
+    const QUOTE_OPEN = '【';
+    const QUOTE_CLOSE = '】';
+
+    /**
+     * 把一段引用按「【原文】」内联插进草稿，返回新草稿与插入后的光标位置。
+     *
+     * 纯函数，方便测试：quote 里的换行/连续空白压成一个空格（内联引用跨行不好读），
+     * 光标两侧需要时补一个空格，避免和前后文粘在一起。
+     */
+    const insertQuoteText = (draft, quoteText, caret) => {
+      const body = String(draft == null ? '' : draft);
+      const flat = String(quoteText == null ? '' : quoteText).replace(/\s+/g, ' ').trim();
+      if (!flat) return { text: body, caret: Math.max(0, Number(caret) || 0) };
+      const marker = QUOTE_OPEN + flat + QUOTE_CLOSE;
+      const limit = body.length;
+      const at = Math.min(Math.max(0, Number.isFinite(Number(caret)) ? Number(caret) : limit), limit);
+      const before = body.slice(0, at);
+      const after = body.slice(at);
+      const lead = before && !/\s$/.test(before) ? ' ' : '';
+      const tail = after && !/^\s/.test(after) ? ' ' : '';
+      return { text: before + lead + marker + tail + after, caret: before.length + lead.length + marker.length };
+    };
     const PROVIDERS = [
       { id: 'claude', label: 'Claude Code', short: 'CLAUDE' },
       { id: 'codex', label: 'Codex', short: 'CODEX' },
@@ -843,26 +865,17 @@ window.__ModuleLoader__.load({
 }
 .cw-quotebtn:hover{ background: var(--cw-hover); }
 .cw-quotebtn .cw-ic{ width: 12px; height: 12px; color: var(--cw-subtle); }
-/* 草稿里的引用：贴在输入框上方，一行一段，右侧 × 单独移除，末尾「清空」 */
-.cw-quoterail{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px 0; }
-.cw-quote-chip{
-  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-  height: 24px; padding: 0 4px 0 8px; border-radius: var(--cw-radius-pill);
-  background: var(--cw-hover); color: var(--cw-muted); font-size: var(--cw-fs-xs);
+/* 内联引用：草稿里就是【原文】这串文字（跟正文一起可编辑），所以样式只出现在
+   发出去的气泡里——浅底 + 左侧竖线 + 弱化色，和输入框里看到的形状对得上。 */
+.cw-quote-inline{
+  color: var(--cw-muted);
+  background: var(--cw-hover);
+  border-left: 2px solid var(--cw-border-4, var(--cw-border-2));
+  border-radius: 3px;
+  padding: 0 4px 0 5px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
-.cw-quote-chip .cw-ic{ width: 12px; height: 12px; flex: none; color: var(--cw-subtle); }
-.cw-quote-chip-text{ max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cw-quote-chip .cw-quote-x{
-  width: 16px; height: 16px; padding: 0; border: 0; border-radius: 999px;
-  display: grid; place-items: center; background: transparent; color: var(--cw-subtle);
-}
-.cw-quote-chip .cw-quote-x:hover{ background: var(--cw-border-2); color: var(--cw-text); }
-.cw-quote-chip .cw-quote-x .cw-ic{ width: 10px; height: 10px; }
-.cw-quote-clear{
-  height: 24px; padding: 0 6px; border: 0; background: transparent;
-  color: var(--cw-subtle); font-size: var(--cw-fs-xs);
-}
-.cw-quote-clear:hover{ color: var(--cw-text); }
 /* 用户消息里的附件：图片直接给缩略图（Host 的 /attachment 端点回放），
    文件给一枚小胶囊。都靠右，和气泡同一列。 */
 .cw-msg-atts{ display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-bottom: 6px; }
@@ -4844,7 +4857,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
 
       /* ------------------------------------------------------ 引用选中的文字 */
 
-      const [quotes, setQuotes] = useState([]);
+      /* 只留「选区 + 浮动按钮」这一步；点下去就把原文内联插进草稿。 */
       const [quoteSel, setQuoteSel] = useState(null);
 
       /**
@@ -4878,34 +4891,27 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         });
       };
 
+      /**
+       * 引用落地：插到**光标处**（输入框没焦点过就接在末尾），形如
+       * `【被引用的原文】`，跟正文一起可编辑、可删除——不再往输入框上方堆 chip。
+       */
       const addQuote = () => {
         if (!quoteSel) return;
-        if (quotes.length >= QUOTE_MAX_ITEMS) {
-          showToast('一次最多引用 ' + QUOTE_MAX_ITEMS + ' 段');
-          setQuoteSel(null);
-          return;
-        }
-        setQuotes((current) => [...current, {
-          id: 'q_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
-          text: quoteSel.text,
-          role: quoteSel.role,
-          itemId: quoteSel.itemId,
-          at: Date.now(),
-        }]);
-        if (quoteSel.clipped) showToast('引用超过 ' + QUOTE_MAX_CHARS + ' 字，已截断');
+        const area = textareaRef.current;
+        const caret = area && typeof area.selectionStart === 'number' ? area.selectionStart : draft.length;
+        const next = insertQuoteText(draft, quoteSel.text, caret);
+        setDraft(next.text);
         setQuoteSel(null);
-        if (textareaRef.current) textareaRef.current.focus();
-      };
-
-      /* 发给 CLI 的形态：每行加 `> `、多段之间空一行，整体放在正文最前面。
-         Claude / Codex 都读得懂引用块，不需要额外协议。 */
-      const quotePrefix = () => {
-        if (!quotes.length) return '';
-        const blocks = quotes.map((entry) => String(entry.text || '')
-          .split(/\r?\n/)
-          .map((line) => '> ' + line)
-          .join('\n'));
-        return blocks.join('\n\n') + '\n\n';
+        if (quoteSel.clipped) showToast('引用超过 ' + QUOTE_MAX_CHARS + ' 字，已截断');
+        /* 光标落到引用后面，并重算高度（setDraft 不会触发 onChange 里的那段自动撑高） */
+        setTimeout(() => {
+          const element = textareaRef.current;
+          if (!element) return;
+          element.focus();
+          try { element.setSelectionRange(next.caret, next.caret); } catch { /* 只读态忽略 */ }
+          element.style.height = 'auto';
+          element.style.height = Math.min(336, element.scrollHeight) + 'px';
+        }, 0);
       };
 
       /* 点别处 / Esc / 滚动：浮动按钮立刻消失（fixed 定位不会跟着选区走）。 */
@@ -4924,9 +4930,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           document.removeEventListener('keydown', onKey, true);
         };
       }, [quoteSel]);
-
-      /* 引用只在一条消息的发送里有效：切会话就清空，免得把别的会话的引用带过去。 */
-      useEffect(() => { setQuotes([]); }, [currentId]);
 
       /**
        * 发给 Host 的线上形态：带字节的上传，或带绝对路径的引用（文件夹/拖入的文件）。
@@ -4961,19 +4964,15 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           const body = (override == null ? draft : override).trim();
           if (!body && !attachments.length) return;
           const plan = planMode ? planPrefix(topProvider) : '';
-          /* 引用块放在最前面：先给原文，再给指令，CLI 读起来最自然。 */
-          const composed = quotePrefix() + plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+          const composed = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
           /* 图片/文件先跟着首条消息走：会话建好之后才有附件目录，
              所以这里把内容一起交给 createSession，由它在建好后发出去。 */
           const pendingAttachments = attachments;
-          /* 引用也一起清掉：它只对这一次发送有效。失败时连引用一起还回去。 */
-          const pendingQuotes = quotes;
           setPendingPrompt(composed);
           setDraft('');
           setFileRef('');
           setSkillRefs([]);
           setAttachments([]);
-          setQuotes([]);
           setPlanMode(false);
           const created = await createSession(topProvider, (scopedActive[0] && scopedActive[0].cwd) || (boot ? boot.defaultCwd : ''), {
             prompt: composed,
@@ -4983,21 +4982,19 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           if (!created) {
             setDraft(composed);
             setAttachments(pendingAttachments);
-            setQuotes(pendingQuotes);
           }
           return;
         }
         const body = (override == null ? draft : override).trim();
         if (!body && !attachments.length) return;
         const plan = planMode ? planPrefix(topProvider) : '';
-        const content = quotePrefix() + plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+        const content = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
         try {
           await api('/sessions/' + currentId + '/message', {
             method: 'POST',
             body: JSON.stringify({ text: content, attachments: wireAttachments(attachments) }),
           });
           if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); setAttachments([]); }
-          setQuotes([]);
           // 计划只对下一条消息有效：发出去就复位，免得下一条还带着旧指令
           if (planMode) { setPlanMode(false); showToast('计划指令已随这条消息发出，计划模式已关'); }
           refreshSessions();
@@ -5586,10 +5583,25 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       };
 
       /**
-       * 用户气泡的正文：只把行首 `> ` 的行渲染成引用块（左侧竖线 + 弱化色），
-       * 其余仍是纯文本。刻意不上完整 Markdown——用户写的 `*`、`_` 会变成斜体，
-       * 改动面太大，也不是他想要的效果。
+       * 用户气泡的正文：
+       *   - 内联引用 `【原文】` 渲染成弱化的小块（和草稿里看到的形状一致）；
+       *   - 老消息里的 `> ` 行仍按引用块渲染（1.0.46 发出去的会留在历史里）。
+       * 其余一律纯文本——不给用户气泡上完整 Markdown，用户写的 `*`、`_` 不该变斜体。
        */
+      const renderInlineQuotes = (line) => {
+        const nodes = [];
+        const pattern = /【([^】]*)】/g;
+        let cursor = 0;
+        let match;
+        while ((match = pattern.exec(line)) !== null) {
+          if (match.index > cursor) nodes.push(line.slice(cursor, match.index));
+          nodes.push(h('span', { key: 'qi' + nodes.length, className: 'cw-quote-inline' }, match[1]));
+          cursor = match.index + match[0].length;
+        }
+        if (cursor < line.length) nodes.push(line.slice(cursor));
+        return nodes;
+      };
+
       const renderUserText = (value) => {
         const lines = String(value || '').split(/\r?\n/);
         const nodes = [];
@@ -5603,7 +5615,13 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         };
         const flushPlain = () => {
           if (!plain.length) return;
-          nodes.push(h('div', { key: 'p' + nodes.length, className: 'cw-plain-block' }, plain.join('\n')));
+          /* 一行一行拼：行间补真实换行符，行内再切出内联引用 */
+          const children = [];
+          plain.forEach((line, lineIndex) => {
+            if (lineIndex) children.push('\n');
+            children.push(...renderInlineQuotes(line));
+          });
+          nodes.push(h('div', { key: 'p' + nodes.length, className: 'cw-plain-block' }, children));
           plain = [];
         };
         for (const line of lines) {
@@ -5615,7 +5633,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             plain.push(line);
           }
         }
-        /* 发送时 quotePrefix 末尾带一个换行：别把它渲染成气泡底部的一行空白。 */
+        /* 草稿末尾的换行别渲染成气泡底部的一行空白 */
         while (plain.length && plain[plain.length - 1] === '') plain.pop();
         flushQuote();
         flushPlain();
@@ -5942,24 +5960,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   addFiles(picked.files, picked.directories);
                 },
               },
-                /* 引用贴在最上面：一段一条，右侧 × 单独移除，末尾「清空」 */
-                quotes.length ? h('div', { className: 'cw-quoterail' },
-                  quotes.map((entry) => h('span', { key: entry.id, className: 'cw-quote-chip', title: entry.text },
-                    h(Icon, { name: 'quote', size: 12 }),
-                    h('span', { className: 'cw-quote-chip-text' },
-                      (entry.role === 'user' ? '你：' : '回复：')
-                      + String(entry.text || '').replace(/\s+/g, ' ').trim().slice(0, 60)
-                      + (String(entry.text || '').length > 60 ? '…' : '')),
-                    h('button', {
-                      type: 'button',
-                      className: 'cw-quote-x',
-                      title: '移除这段引用',
-                      'aria-label': '移除这段引用',
-                      onClick: () => setQuotes((current) => current.filter((item) => item.id !== entry.id)),
-                    }, h(Icon, { name: 'x', size: 10 })),
-                  )),
-                  h('button', { type: 'button', className: 'cw-quote-clear', onClick: () => setQuotes([]) }, '清空'),
-                ) : null,
                 attachments.length ? h('div', { className: 'cw-attachrail' }, attachments.map((item) => (
                   item.kind === 'image'
                     ? h('div', { key: item.id, className: 'cw-attach-img' },

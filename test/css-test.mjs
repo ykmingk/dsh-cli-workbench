@@ -68,7 +68,7 @@ ok('长度与源码文本一致', css === cssText, 'source=' + cssText.length + 
 ok('样式表不是空串', typeof css === 'string' && css.length > 80000, String(css && css.length));
 
 console.log('\n[3] 关键规则都还在（末尾的规则最容易被截断吞掉）');
-for (const token of ['.cw-root', '.cw-rail', '.cw-bubble-user', '.cw-quote-block', '.cw-quoterail', '.cw-quotebtn', '.cw-send', '.cw-tolatest']) {
+for (const token of ['.cw-root', '.cw-rail', '.cw-bubble-user', '.cw-quote-block', '.cw-quote-inline', '.cw-quotebtn', '.cw-send', '.cw-tolatest']) {
   ok('包含 ' + token, typeof css === 'string' && css.includes(token));
 }
 ok('首尾都完整（首字符非空、末字符是换行）', typeof css === 'string' && css.trim().length > 0 && css.endsWith('\n'));
