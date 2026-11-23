@@ -1227,6 +1227,42 @@ window.__ModuleLoader__.load({
 }
 .cw-notice-line{ text-align: center; font-size: var(--cw-fs-xs); color: var(--cw-subtle); margin: 10px 0; }
 
+/* —— 代码审查报告（codex review / claude -p） —— */
+.cw-review{
+  margin: 12px 0; border: .5px solid var(--cw-border); border-radius: var(--cw-radius-md);
+  background: var(--cw-sub); overflow: hidden;
+}
+.cw-review.is-failed{ border-color: color-mix(in srgb, var(--cw-danger) 40%, transparent); }
+.cw-review-head{
+  display: flex; align-items: center; gap: 7px; padding: 8px 10px;
+  border-bottom: .5px solid var(--cw-border); font-size: var(--cw-fs-xs); color: var(--cw-subtle);
+}
+.cw-review-title{ color: var(--cw-text); font-weight: 600; }
+.cw-review-badge{
+  padding: 1px 7px; border-radius: 999px; font-size: var(--cw-fs-micro);
+  background: var(--cw-accent-soft, rgba(16, 163, 127, .12)); color: var(--cw-running);
+}
+.cw-review-badge.is-warn{ background: var(--cw-danger-bg); color: var(--cw-danger); }
+.cw-review-meta{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-review-copy{
+  border: 0; background: transparent; color: var(--cw-subtle); padding: 3px; border-radius: var(--cw-radius-sm);
+  display: inline-flex; align-items: center; cursor: pointer;
+}
+.cw-review-copy:hover{ background: var(--cw-hover); color: var(--cw-text); }
+.cw-review-body{
+  margin: 0; padding: 10px 12px; max-height: 420px; overflow: auto;
+  font-family: var(--cw-mono, ui-monospace, Consolas, monospace);
+  font-size: var(--cw-fs-micro); line-height: 1.65; color: var(--cw-text);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* —— 排队提示（运行中发消息） —— */
+.cw-queued{
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 6px 10px;
+  border-radius: var(--cw-radius-md); background: var(--cw-sub);
+  font-size: var(--cw-fs-xs); color: var(--cw-subtle);
+}
+
 /* 空态 */
 .cw-empty{ max-width: 620px; margin: 60px auto 0; text-align: center; }
 .cw-empty-mark{
@@ -4087,6 +4123,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         h('button', { onClick: () => onAction('openfolder') }, h(Icon, { name: 'folder' }), '打开文件夹'),
         h('button', { onClick: () => onAction('copyid') }, h(Icon, { name: 'copy' }), '复制 Session ID'),
         h('div', { className: 'cw-menu-sep' }),
+        /* 审查要在会话目录里跑，放到菜单里最合适：右键哪条就审哪条。 */
+        h('button', {
+          onClick: () => onAction('review'),
+          disabled: menu.session.status === 'running' || menu.session.status === 'waiting',
+        }, h(Icon, { name: 'shield', size: 14 }), '审查未提交改动'),
         h('button', { onClick: () => onAction('batch') }, h(Icon, { name: 'task' }), '批量操作'),
         h('button', { onClick: () => onAction('archive') }, h(Icon, { name: 'archive' }), '归档'),
         h('button', { className: 'danger', onClick: () => onAction('delete') }, h(Icon, { name: 'trash' }), '删除'),
@@ -5502,6 +5543,27 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         if (!body && !attachments.length) return;
         const plan = planMode ? planPrefix(topProvider) : '';
         const content = plan + (fileRef ? '@' + fileRef + ' ' : '') + body;
+        /* 这一轮还在跑：改成排队（Host 会在轮结束时自动发出），不再弹「正在运行」的报错。
+           附件不排队——排队期间附件目录可能被清理，让用户等这轮结束再发。 */
+        if (viewSession && (viewSession.status === 'running' || viewSession.status === 'waiting')) {
+          if (!body) {
+            showToast('这一轮还没结束：附件要等它跑完再发，现在先打字排队。');
+            return;
+          }
+          try {
+            const result = await api('/sessions/' + currentId + '/queue', {
+              method: 'POST',
+              body: JSON.stringify({ text: content }),
+            });
+            if (override == null) setDraft('');
+            if (planMode) setPlanMode(false);
+            showToast(result.sent ? '这条已经发出' : '已排队 ' + result.queued + ' 条：这一轮结束后自动发出');
+            refreshSessions();
+          } catch (error) {
+            showToast(error.message);
+          }
+          return;
+        }
         try {
           await api('/sessions/' + currentId + '/message', {
             method: 'POST',
@@ -5662,12 +5724,37 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           if (session.provider === 'claude') lines.push('Claude session_id: ' + (session.claudeSessionId || '（尚未建立，发第一句话后才有）'));
           else lines.push('Codex thread_id: ' + (session.codexThreadId || '（尚未建立，发第一句话后才有）'));
           copyText(lines.join('\n'), '已复制 Session ID：' + session.id);
+        } else if (action === 'review') {
+          await startReview(session);
         } else if (action === 'batch') {
           setBatch(true);
         } else if (action === 'archive') {
           await archive(session.id);
         } else if (action === 'delete') {
           await remove(session.id);
+        }
+      };
+
+      /**
+       * 代码审查：在当前会话的工作目录跑一次 review，报告作为一条 `review` 记录
+       * 插进对话（Host 负责跑命令，客户端只等结果）。
+       */
+      const startReview = async (session) => {
+        setCtxMenu(null);
+        showToast('正在审查未提交改动…（最长 10 分钟）');
+        try {
+          const result = await api('/sessions/' + session.id + '/review', {
+            method: 'POST',
+            body: JSON.stringify({ scope: 'uncommitted' }),
+          });
+          /* 当前会话就地更新，不用等下一次轮询；别的会话下次打开时从服务端读。 */
+          setDetail((current) => (current && current.session && current.session.id === session.id
+            ? { session: result.session, items: result.items || current.items }
+            : current));
+          showToast(result.ok ? '审查完成，报告在对话末尾' : '审查跑完了，但命令返回非 0，报告末尾有输出');
+          refreshSessions();
+        } catch (error) {
+          showToast('审查失败：' + error.message);
         }
       };
 
@@ -6282,6 +6369,34 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             index += 1;
             continue;
           }
+          if (item.kind === 'review') {
+            /* 审查报告：一条独立记录，头部写清楚是谁在哪儿跑的、耗时多久，
+               正文原样给（报告是给人读的，不做 Markdown 加工）。 */
+            nodes.push(h('div', { key: item.id || index, className: 'cw-review' + (item.ok ? '' : ' is-failed') },
+              h('div', { className: 'cw-review-head' },
+                h(Icon, { name: 'shield', size: 14 }),
+                h('span', { className: 'cw-review-title' }, '代码审查'),
+                /* codex review 会给结论：直接显示「LGTM / N 个问题」，不用人翻 JSON */
+                item.summary
+                  ? h('span', {
+                    className: 'cw-review-badge' + (item.summary.findings ? ' is-warn' : ''),
+                    title: item.summary.verdict + (item.summary.confidence ? '（置信度 ' + item.summary.confidence + '）' : ''),
+                  }, item.summary.findings ? item.summary.findings + ' 个问题' : 'LGTM')
+                  : null,
+                h('span', { className: 'cw-review-meta' },
+                  (item.command || '') + ' · ' + fmtDuration(item.durationMs) + (item.ok ? '' : ' · 命令返回非 0')),
+                h('button', {
+                  type: 'button',
+                  className: 'cw-review-copy',
+                  title: '复制报告',
+                  onClick: () => copyText(item.text || '', '已复制审查报告'),
+                }, h(Icon, { name: 'copy', size: 12 })),
+              ),
+              h('div', { className: 'cw-review-body' }, item.text || ''),
+            ));
+            index += 1;
+            continue;
+          }
           index += 1;
         }
         if (pending) {
@@ -6484,6 +6599,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             h('div', { className: 'cw-dock' },
               /* 任务清单在输入卡上方——DSH 的 conversation.input.dock 就是这个地方 */
               viewSession && dockTodos ? h(TodoCard, { todos: dockTodos }) : null,
+              /* 排队提示：这一轮还在跑时发的消息不进对话，先在这里挂个条数，
+                 免得人以为「点了发送没反应」。 */
+              viewSession && viewSession.queued > 0 ? h('div', { className: 'cw-queued', title: '这一轮结束后会自动发出' },
+                h(Icon, { name: 'clock', size: 12 }),
+                h('span', null, '已排队 ' + viewSession.queued + ' 条，本轮结束后自动发送'),
+              ) : null,
               h('div', {
                 className: 'cw-inputbox' + (dragging ? ' is-drag' : ''),
                 /* 拖文件进来：与 DSH 的 drop 目标同一套语义，只是范围收在输入卡上 */

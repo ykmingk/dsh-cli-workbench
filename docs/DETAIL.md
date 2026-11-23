@@ -251,6 +251,11 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 - Claude 会话复用同一个 CLI 进程以支持多轮；空闲 10 分钟后进程会被回收，下一条消息用 `--resume` 恢复；删除会话或卸载插件会终止对应进程。
 - 审批超时（5 分钟）自动拒绝，避免进程一直挂着。
 
+### 代码审查与运行中排队
+
+- **审查**（`POST /sessions/:id/review`）：先 `git rev-parse --is-inside-work-tree` 确认目录是 git 仓库，再按助手分两条路——Codex 走 `codex review --uncommitted`（对比分支用 `--base`），Claude 由 Host 跑 `git diff` 后把 diff 塞进 `claude -p` 的 stdin（提示词明确要求「不要调用工具」，否则无人值守时会卡在审批上）。命令用 `spawn` 的 `cwd` 而不是命令里拼 `cd`（路径含空格/中文时经 cmd 解析容易出错）。Codex 分支带上和会话相同的 Windows 沙箱绕行参数（`-c windows.sandbox="..."`），**没有它 `codex review` 会把「读 git」也当成命令执行拒掉**，模型只能空转（实测 5 分钟）。报告存成 `kind: 'review'` 的记录，Codex 输出的那段 JSON 用括号配平扫描抽出来变成 `summary`（徽标），正文里去掉；报告正文上限 60KB、diff 上限 200KB、超时 10 分钟。
+- **排队**（`POST /sessions/:id/queue`）：运行中收到的消息进 `session.queued`（纯文字，最多 20 条，随会话落盘），两个适配器在 `turn-end` 时调 `wb.onTurnEnd(session)`，Host 发现队列非空且已空闲就自动发下一条。**没有用 `codex queue`**：那个队列属于交互式会话（TUI），工作台每轮是独立的 `codex exec` 进程，消息排进 CLI 的队列没人消费；排在工作台这一层两个助手行为一致。归档的会话不自动发，避免被顶回列表。附件不排队（落盘路径可能已变），直接提示等这轮结束。
+
 ### 排查日志 `operations.log`
 
 同一个数据目录下还有一个 `operations.log`，**只给排查用，界面上不显示、也没有接口能读它**。

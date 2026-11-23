@@ -18,7 +18,7 @@ import * as claudeAdapter from './lib/claude.js';
 import * as codexAdapter from './lib/codex.js';
 import { scanClaudeSessions, scanCodexSessions } from './lib/history.js';
 import { contentToText, toolTarget, toolCategory, toolVerb, diffOf, humanImpact, isAdvisoryMessage, codexFailureText } from './lib/format.js';
-import { now, idOf, text, clipText, oneLine, realCwd, run, killTree, PERMISSION_MODES, SANDBOX_MODES, SANDBOX_BACKENDS, MAX_ITEMS, API, json } from './lib/util.js';
+import { now, idOf, text, clipText, oneLine, realCwd, run, runIn, killTree, PERMISSION_MODES, SANDBOX_MODES, SANDBOX_BACKENDS, MAX_ITEMS, API, json } from './lib/util.js';
 
 const MCP_SCRIPT = fileURLToPath(new URL('./mcp-permission.mjs', import.meta.url));
 
@@ -525,6 +525,93 @@ const ATTACH_MAX_ITEMS = 10;
 const ATTACH_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const ATTACH_MAX_FILE_BYTES = 20 * 1024 * 1024;
 const ATTACH_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
+
+/* 代码审查：一次审查最多跑 10 分钟；diff 超过 200KB 就别硬塞给模型了；
+   报告本身截到 60KB（再长界面上也没人读）。 */
+const REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
+const REVIEW_MAX_DIFF = 200 * 1024;
+const REVIEW_MAX_REPORT = 60 * 1024;
+
+/**
+ * 从 codex review 的输出里找那段 JSON，抽出结论与问题条数。
+ * 找不到就返回 null（Claude 的报告是自然语言，本来就没有这个结构）。
+ */
+function extractReview(report) {
+  const raw = text(report);
+  if (!raw) return { summary: null, body: '' };
+  let summary = null;
+  const pieces = [];
+  let cursor = 0;
+  /* 逐个「配平的 {}」试：codex 的 JSON 里嵌着对象数组，正则匹配不了括号层级。 */
+  for (let index = 0; index < raw.length; index += 1) {
+    if (raw[index] !== '{') continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let at = index; at < raw.length; at += 1) {
+      const char = raw[at];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') { inString = true; continue; }
+      if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        const slice = raw.slice(index, at + 1);
+        let parsed = null;
+        try { parsed = JSON.parse(slice); } catch { parsed = null; }
+        if (parsed && typeof parsed === 'object'
+          && ('overall_correctness' in parsed || Array.isArray(parsed.findings))) {
+          if (!summary) {
+            const findings = Array.isArray(parsed.findings) ? parsed.findings.length : 0;
+            const verdict = text(parsed.overall_correctness);
+            summary = {
+              verdict: verdict || (findings ? '需要修改' : 'patch is correct'),
+              findings,
+              confidence: Number(parsed.overall_confidence_score) || null,
+            };
+          }
+          /* 这段 JSON 对人不友好，正文里去掉；结论已经进了 summary（界面上的徽标）。 */
+          pieces.push(raw.slice(cursor, index));
+          cursor = at + 1;
+        }
+        index = at;
+        break;
+      }
+    }
+  }
+  pieces.push(raw.slice(cursor));
+  const body = pieces.join('').replace(/\n{3,}/g, '\n\n').trim();
+  return { summary, body: body || raw.trim() };
+}
+
+
+/**
+ * 把 diff 包成给 Claude 的审查提示。
+ *
+ * 刻意要求「只根据这份 diff、不要调用工具」：工作台的 CLI 进程是无人值守的，
+ * 一旦模型决定跑命令就会卡在审批上，报告永远回不来。diff 由 Host 先算好，
+ * 模型只做判断。
+ */
+function reviewPrompt(patch) {
+  return [
+    '你是资深代码审查者。下面是一次 `git diff` 的完整内容，请只根据它给出审查意见。',
+    '要求：',
+    '1) 不要调用任何工具、不要修改任何文件；',
+    '2) 第一行给结论（`LGTM` 或 `发现 N 个问题`）；',
+    '3) 之后按文件分组，每条写清楚：文件:行号 + 问题 + 建议；',
+    '4) 只报真实问题（逻辑错误、边界、并发、错误处理、安全、性能），不要罗列风格偏好；',
+    '5) 用中文、纯文本，不要用 Markdown 标记（不要 **、#、```、表格）——报告在等宽块里原样显示。',
+    '',
+    '```diff',
+    patch,
+    '```',
+  ].join('\n');
+}
 
 /** 按文件头核对图片的真实类型：客户端报的 mediaType 不能单独作为依据。 */
 function looksLikeImage(buffer, mediaType) {
@@ -1219,6 +1306,8 @@ class Workbench {
         }
         : null,
       pendingCount: session.pendingQueue.length + (session.pending ? 1 : 0),
+      /* 运行中排队等发送的条数（纯文字，见 queueMessage） */
+      queued: Array.isArray(session.queued) ? session.queued.length : 0,
       updatedAt: session.updatedAt,
       createdAt: session.createdAt,
       itemCount: session.items.length,
@@ -1578,6 +1667,36 @@ class Workbench {
         // 客户端只落 `/技能名` 短令牌，正文在这里展开（与 DSH 的 pre-step 一致）
         await this.send(session, this.expandSkillTokens(content, session.cwd, session.provider), attachments);
         return json(res, 200, { ok: true, session: this.publicSession(session) });
+      }
+      if (action === '/queue' && method === 'POST') {
+        /* 运行中排队：只收文字（附件不排队，理由见 queueMessage 的注释）。 */
+        const body = await readBody(req);
+        const content = this.expandSkillTokens(text(body.text).trim(), session.cwd, session.provider);
+        if (!content) return json(res, 400, { error: '没有内容可以排队' });
+        if (Array.isArray(body.attachments) && body.attachments.length) {
+          return json(res, 400, { error: '运行中只能排队文字；附件等这一轮结束再发' });
+        }
+        /* 不在跑就直接发，别让「排队」变成一个奇怪的空队列。 */
+        if (!this.isBusy(session)) {
+          await this.send(session, content, []);
+          return json(res, 200, { ok: true, queued: 0, sent: true, session: this.publicSession(session) });
+        }
+        try {
+          const queued = this.queueMessage(session, content);
+          return json(res, 200, { ok: true, queued, sent: false, session: this.publicSession(session) });
+        } catch (error) {
+          return json(res, 400, { error: String((error && error.message) || error) });
+        }
+      }
+      if (action === '/review' && method === 'POST') {
+        const body = await readBody(req);
+        const scope = text(body.scope) === 'base' ? 'base' : 'uncommitted';
+        try {
+          const result = await this.reviewSession(session, scope, body.base);
+          return json(res, 200, { ok: result.ok, item: result.item, session: this.publicSession(session), items: session.items });
+        } catch (error) {
+          return json(res, 400, { error: String((error && error.message) || error) });
+        }
       }
       if (action === '/stop' && method === 'POST') {
         await this.stop(session);
@@ -1960,6 +2079,148 @@ class Workbench {
     }
     if (created.length) this.save();
     return { created, skipped };
+  }
+
+  /* ------------------------------------------- 运行中的消息排队（纯文字） */
+
+  /** 这个会话是不是「正在跑一轮」：spawn/waiting/streaming/tool 都算。 */
+  isBusy(session) {
+    return session.status === 'running' || session.status === 'waiting' || Boolean(session._turnActive);
+  }
+
+  /**
+   * 运行中排队一条消息：不打断当前轮，等这一轮结束自动发出。
+   *
+   * 为什么不用 `codex queue`：它排的是交互式会话（TUI）的队列，而工作台每轮都是
+   * 独立的 `codex exec` 进程，排进 CLI 的队列里没人消费，消息会一直躺着。
+   * 排在工作台这一层，两个助手行为一致，也能落盘（重启不丢）。
+   *
+   * 只收文字：附件要落盘、要算大小，排队期间附件目录可能被清理，容易出现
+   * 「排着排着文件没了」，这种情况让用户等这轮结束再发。
+   */
+  queueMessage(session, content) {
+    const body = text(content).trim();
+    if (!body) throw new Error('没有内容可以排队');
+    const queue = Array.isArray(session.queued) ? session.queued : [];
+    if (queue.length >= 20) throw new Error('最多排队 20 条，等这轮结束再发');
+    queue.push({ id: idOf('q'), text: body, at: now() });
+    session.queued = queue;
+    this.sessionEvent(session);
+    this.scheduleSave();
+    return queue.length;
+  }
+
+  /** 一轮正常结束的钩子（两个适配器都会调）：有排队就发下一条。 */
+  onTurnEnd(session) {
+    const queue = Array.isArray(session.queued) ? session.queued : [];
+    if (!queue.length) return;
+    if (this.isBusy(session)) return;
+    /* 归档的会话不自动跑：归档意味着「先放着」，自动发消息会把它顶回列表。 */
+    if (session.archived) return;
+    const next = queue.shift();
+    session.queued = queue;
+    this.sessionEvent(session);
+    this.scheduleSave();
+    Promise.resolve()
+      .then(() => this.send(session, next.text))
+      .catch((error) => {
+        session.error = '排队消息发送失败：' + (error && error.message ? error.message : String(error));
+        this.sessionEvent(session);
+        this.scheduleSave();
+      });
+  }
+
+  /* --------------------------------------------- 代码审查（未提交改动 / 对比分支） */
+
+  /**
+   * 在本会话的工作目录跑一次代码审查，把报告作为一条 `review` 记录插进对话。
+   *
+   * Codex 用自带的 `codex review`（专门命令，非交互、直接出报告）；
+   * Claude 没有对应命令，就把 `git diff` 直接塞进 `claude -p` 的提示里——
+   * 自己算 diff 而不是让模型去跑工具，审查过程就不会卡在审批上。
+   */
+  async reviewSession(session, scope, base) {
+    /* 测试用接缝：注入一个假的执行器，就不必真的调 CLI（真调用要几十秒、还花钱）。 */
+    const exec = this._runIn || runIn;
+    /* 注意：exec 必须在任何 await 之前声明——下面第一处调用就在方法开头。 */
+    if (this.isBusy(session)) throw new Error('这个会话正在跑，等这一轮结束再审查。');
+    const cwd = realCwd(session.cwd);
+    let isDir = false;
+    try { isDir = Boolean(cwd) && statSync(cwd).isDirectory(); } catch { isDir = false; }
+    if (!isDir) throw new Error('工作目录不存在：' + (session.cwd || '(空)'));
+
+    const repo = await exec(cwd, 'git rev-parse --is-inside-work-tree', { timeout: 20000 });
+    if (repo.code !== 0 || !/true/i.test(repo.stdout)) {
+      throw new Error('这个目录不是 git 仓库（或没有 git），没法审查改动。');
+    }
+    if (scope === 'base' && !/^[A-Za-z0-9._\/-]{1,120}$/.test(text(base))) {
+      throw new Error('分支名只能包含字母、数字、点、下划线、斜杠和短横线。');
+    }
+
+    const startedAt = now();
+    let command = '';
+    let result;
+    if (session.provider === 'codex') {
+      /* 和会话一样带上 Windows 沙箱的绕行参数：没有它，codex 的沙箱会把
+         「读 git」也当成命令执行拒掉，审查就变成模型瞎猜（实测会空转五分钟）。 */
+      const sandbox = SANDBOX_MODES.has(session.sandboxMode) ? session.sandboxMode : 'workspace-write';
+      let backendOverride = null;
+      if (sandbox !== 'bypass') {
+        const state = await this.codexSandbox().catch(() => null);
+        backendOverride = state && state.override ? state.override : null;
+      }
+      const parts = ['codex'];
+      if (backendOverride) parts.push('-c windows.sandbox="' + backendOverride + '"');
+      parts.push('-c approval_policy="never"');
+      parts.push(sandbox === 'bypass' ? '-c sandbox_mode="danger-full-access"' : '-c sandbox_mode=' + sandbox);
+      parts.push('review', scope === 'base' ? '--base ' + text(base) : '--uncommitted');
+      command = parts.join(' ');
+      result = await exec(cwd, command, { timeout: REVIEW_TIMEOUT_MS });
+    } else {
+      const diff = await exec(cwd, 'git diff --no-color --unified=3', { timeout: 60000 });
+      const patch = text(diff.stdout).trim();
+      if (!patch) {
+        const staged = await exec(cwd, 'git diff --cached --no-color', { timeout: 60000 });
+        if (!text(staged.stdout).trim()) throw new Error('没有未提交改动可审查。');
+        throw new Error('改动都已暂存（staged），暂不支持只审暂存区；先 commit 或取消暂存。');
+      }
+      if (patch.length > REVIEW_MAX_DIFF) {
+        throw new Error('改动太大（' + Math.round(patch.length / 1024) + ' KB，上限 '
+          + Math.round(REVIEW_MAX_DIFF / 1024) + ' KB）：先分批提交再审查。');
+      }
+      command = 'claude -p（审查 git diff）';
+      result = await exec(cwd, 'claude -p --output-format text', {
+        timeout: REVIEW_TIMEOUT_MS,
+        input: reviewPrompt(patch),
+      });
+    }
+
+    const report = text(result.stdout).trim() || text(result.stderr).trim() || '（审查没有输出）';
+    const { summary, body } = extractReview(report);
+    const item = {
+      id: idOf('review'),
+      kind: 'review',
+      at: now(),
+      provider: session.provider,
+      command,
+      scope: scope === 'base' ? 'base' : 'uncommitted',
+      ok: result.code === 0,
+      code: result.code,
+      durationMs: now() - startedAt,
+      text: (body || report).length > REVIEW_MAX_REPORT
+        ? (body || report).slice(0, REVIEW_MAX_REPORT) + '\n\n…（报告过长，已截断）'
+        : (body || report),
+      /* codex review 会输出一段 JSON（findings / overall_correctness）：
+         结论抽成 summary 给徽标用，正文里那段 JSON 去掉（对人没意义）。 */
+      summary,
+    };
+    session.items.push(item);
+    if (session.items.length > MAX_ITEMS) session.items = session.items.slice(-MAX_ITEMS);
+    session.updatedAt = now();
+    this.sessionEvent(session);
+    this.scheduleSave();
+    this.logOperation('session.review', { id: session.id, provider: session.provider, scope: item.scope, ok: item.ok, durationMs: item.durationMs });
+    return { ok: item.ok, item };
   }
 
   /**
