@@ -6013,9 +6013,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         groupMenu ? h('div', { style: { position: 'absolute', inset: 0, zIndex: 91 }, onClick: () => setGroupMenu(null) }) : null,
         confirmBox ? h(ConfirmDialog, {
           title: confirmBox.title,
+          /* 这句不能照抄 DSH 的「转录与改动记录」：我们删的是工作台记录、附件和
+             CLI 那边的会话文件，项目目录里的文件（包括 CLI 改过的代码）一个都不动。
+             写成「改动记录会删」会让人以为代码改动被回滚了。 */
           body: confirmBox.ids.length > 1
-            ? '这些会话的转录与改动记录会一起删除，操作不可撤销。'
-            : '这个会话的转录与改动记录会一起删除，操作不可撤销。',
+            ? '这些会话的聊天记录、附件，以及 CLI 那边的会话文件都会删掉，无法恢复；项目文件不受影响。'
+            : '这个会话的聊天记录、附件，以及 CLI 那边的会话文件都会删掉，无法恢复；项目文件不受影响。',
           okLabel: confirmBox.ids.length > 1 ? '删除 ' + confirmBox.ids.length + ' 个' : '删除',
           danger: true,
           busy: confirmBox.busy,
