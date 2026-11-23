@@ -228,6 +228,12 @@ console.log('\n[5] /attachment 的边界：只回放本会话图片');
   const textFile = await request('GET', '/attachment?session=cw_route&file=' + encodeURIComponent('x.txt'));
   ok('非图片扩展名 403', textFile.status === 403 && textFile.json.error === 'not an image', JSON.stringify(textFile.json));
 
+  /* 跨站 <img> 能当「文件存不存在」的探针，带 Sec-Fetch-Site: cross-site 就拒掉 */
+  const crossSite = await request('GET', '/attachment?session=cw_route&file=' + encodeURIComponent('x.png'), null, { 'sec-fetch-site': 'cross-site' });
+  ok('跨站取附件被拒 403', crossSite.status === 403 && crossSite.json.error === 'cross-site request rejected', JSON.stringify(crossSite.json));
+  const sameOrigin = await request('GET', '/attachment?session=cw_route&file=' + encodeURIComponent('x.png'), null, { 'sec-fetch-site': 'same-origin' });
+  ok('同源请求照常走（这里是没有这个文件 → 404）', sameOrigin.status === 404, String(sameOrigin.status));
+
   const noSession = await request('GET', '/attachment?session=nope&file=a.png');
   ok('未知会话 404', noSession.status === 404, JSON.stringify(noSession.json));
 

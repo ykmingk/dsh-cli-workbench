@@ -650,6 +650,36 @@ function scanTree(dirs, limit = 20000) {
   return result;
 }
 
+/**
+ * 同 scanTree，但**分片让出事件循环**：几万个文件同步地 statSync 会把整个 Host
+ * 卡住（同一个进程里还有 SSE 推送与 HTTP 路由在跑）。
+ * 每处理 400 个文件让出一次，代价是两次扫描之间的几十毫秒延迟。
+ */
+async function scanTreeAsync(dirs, limit = 20000) {
+  const result = { files: 0, bytes: 0, truncated: false };
+  const stack = [...(dirs || [])];
+  let budget = 400;
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (result.files >= limit) { result.truncated = true; return result; }
+      if (entry.isDirectory()) { stack.push(path.join(dir, entry.name)); continue; }
+      if (!entry.isFile()) continue;
+      try {
+        result.files += 1;
+        result.bytes += statSync(path.join(dir, entry.name)).size;
+      } catch { /* 文件被占用或已删除：跳过 */ }
+      if (--budget <= 0) {
+        budget = 400;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+  return result;
+}
+
 class Workbench {
   constructor(ctx) {
     this.ctx = ctx;
@@ -1338,7 +1368,7 @@ class Workbench {
     }
     if (route === '/disk' && method === 'GET') {
       // 只报大小与个数，不列文件名：设置面板只要一行读数。
-      return json(res, 200, this.diskUsage());
+      return json(res, 200, await this.diskUsage());
     }
     if (route === '/import/scan' && method === 'GET') {
       /* 只读扫描 CLI 自己的历史，列出工作台还不认识的会话（导入入口用）。 */
@@ -1641,6 +1671,12 @@ class Workbench {
       /* 只回放本会话自己落盘的图片（输入框里的缩略图、聊天记录里的预览）。
          路径由 Host 拼、文件名必须是 basename，且只放行图片扩展名——
          否则这个端点会退化成「读数据目录里任意文件」的口子。 */
+      /* 跨站 `<img>` 虽然读不到像素，但能当「这个文件存不存在」的探针，
+         顺便也会把「用户打开过哪些工作会话」泄露给第三方页面。 */
+      const site = text(req.headers['sec-fetch-site']).toLowerCase();
+      if (site && site !== 'same-origin' && site !== 'same-site' && site !== 'none') {
+        return json(res, 403, { error: 'cross-site request rejected' });
+      }
       const session = this.session(url.searchParams.get('session') || '');
       if (!session) return json(res, 404, { error: 'session not found' });
       const file = text(url.searchParams.get('file') || '');
@@ -2179,17 +2215,18 @@ class Workbench {
   /**
    * CLI 自身的记录占用（设置面板「数据存放位置」下的一行读数）。
    * 缓存 5 分钟：会话跑起来后大小在变，但没必要每开一次设置都把几万文件数一遍。
+   * 扫描是分片异步的（scanTreeAsync），别把事件循环卡住。
    */
-  diskUsage() {
+  async diskUsage() {
     if (this.diskCache && now() - this.diskCache.at < 5 * 60 * 1000) return this.diskCache.value;
     const codexDir = path.join(os.homedir(), '.codex');
+    const claude = await scanTreeAsync([claudeProjectsDir()]);
+    const codex = await scanTreeAsync([path.join(codexDir, 'sessions'), path.join(codexDir, 'archived_sessions')]);
+    const attachments = await scanTreeAsync([this.attachmentsDir]);
     const value = {
-      claude: { ...scanTree([claudeProjectsDir()]), dir: claudeProjectsDir() },
-      codex: {
-        ...scanTree([path.join(codexDir, 'sessions'), path.join(codexDir, 'archived_sessions')]),
-        dir: path.join(codexDir, 'sessions'),
-      },
-      attachments: { ...scanTree([this.attachmentsDir]), dir: this.attachmentsDir },
+      claude: { ...claude, dir: claudeProjectsDir() },
+      codex: { ...codex, dir: path.join(codexDir, 'sessions') },
+      attachments: { ...attachments, dir: this.attachmentsDir },
     };
     this.diskCache = { at: now(), value };
     return value;
@@ -2643,14 +2680,17 @@ class Workbench {
   /**
    * 把客户端传上来的附件落盘，返回可直接交给适配器的描述。
    * 名字、类型、大小全部重新核对：客户端的说法只当线索，磁盘上的字节为准。
+   *
+   * **先全部校验、再统一落盘**：以前是边校验边写，第 N 个超限抛错时前面几个已经
+   * 写进去了，留下永远没人读的孤儿文件（要等删会话才清）。
    */
   saveAttachments(session, list) {
     if (!Array.isArray(list) || list.length === 0) return [];
     if (list.length > ATTACH_MAX_ITEMS) throw new Error('附件最多 ' + ATTACH_MAX_ITEMS + ' 个');
     const dir = path.join(this.attachmentsDir, session.id);
     const saved = [];
+    const pending = [];   // 待写入：{ savedIndex 由 saved 自身承载, bytes }
     let total = 0;
-    let prepared = false;
     for (const entry of list) {
       if (!entry) continue;
       const name = attachmentFileName(entry.name);
@@ -2669,6 +2709,15 @@ class Workbench {
           continue;
         }
         if (!info.isFile()) throw new Error('「' + name + '」不是文件');
+        /* 路径里有 `%` 时不能只传路径：Windows 上 CLI 是用 cmd.exe 起的，
+           `%VAR%` 会在命令行里被展开成别的字符串（路径直接失效）。这种文件
+           退回「复制进附件目录」——多占一份空间，但至少读得到。 */
+        if (rawPath.includes('%')) {
+          const bytes = readFileSync(rawPath);
+          pending.push({ name, declared: declared || 'application/octet-stream', bytes, image: false });
+          total += bytes.length;
+          continue;
+        }
         saved.push({
           kind: 'file',
           name,
@@ -2692,18 +2741,25 @@ class Workbench {
       if (total > ATTACH_MAX_TOTAL_BYTES) {
         throw new Error('附件合计超过 ' + Math.round(ATTACH_MAX_TOTAL_BYTES / 1024 / 1024) + 'MB，请分批发。');
       }
-      if (!prepared) { mkdirSync(dir, { recursive: true }); prepared = true; }
-      const file = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + '-' + name;
-      const target = path.join(dir, file);
-      writeFileSync(target, bytes);
-      saved.push({
-        kind: image ? 'image' : 'file',
-        name,
-        file,
-        mediaType: image ? declared : (declared || 'application/octet-stream'),
-        size: bytes.length,
-        path: target,
-      });
+      pending.push({ name, declared, bytes, image });
+    }
+    /* 全部校验通过，才开始写盘 */
+    if (pending.length) {
+      let prepared = false;
+      for (const item of pending) {
+        if (!prepared) { mkdirSync(dir, { recursive: true }); prepared = true; }
+        const file = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + '-' + item.name;
+        const target = path.join(dir, file);
+        writeFileSync(target, item.bytes);
+        saved.push({
+          kind: item.image ? 'image' : 'file',
+          name: item.name,
+          file,
+          mediaType: item.image ? item.declared : (item.declared || 'application/octet-stream'),
+          size: item.bytes.length,
+          path: target,
+        });
+      }
     }
     return saved;
   }

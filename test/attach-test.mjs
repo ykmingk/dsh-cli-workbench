@@ -48,11 +48,11 @@ ok('抽到 saveAttachments 方法体', Boolean(methodBlock));
 const buildSave = () => {
   const body = methodBlock.slice(methodBlock.indexOf('{') + 1, methodBlock.lastIndexOf('}'));
   const factory = new Function(
-    'path', 'mkdirSync', 'writeFileSync', 'statSync', 'randomBytes', 'text',
+    'path', 'mkdirSync', 'writeFileSync', 'readFileSync', 'statSync', 'randomBytes', 'text',
     helperSrc + '\n return function saveAttachments(session, list) {' + body + '};',
   );
   return factory(
-    path, fs.mkdirSync, fs.writeFileSync, fs.statSync, randomBytes,
+    path, fs.mkdirSync, fs.writeFileSync, fs.readFileSync, fs.statSync, randomBytes,
     (value) => (value == null ? '' : String(value)),
   );
 };
@@ -132,6 +132,40 @@ try { save.call(workbench, session, [{ kind: 'dir', name: 'x', path: path.join(d
 catch (error) { missing = error.message; }
 ok('不存在的路径被拒', /找不到/.test(missing), missing);
 
+/* —— 先全部校验、再落盘：批次里有一条不合法时，前面的也不能留下孤儿文件 —— */
+{
+  const atomicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-attach-atomic-'));
+  const atomicSession = { id: 'cw_atomic' };
+  const big = Buffer.alloc(9 * 1024 * 1024, 0);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47]).copy(big, 0);
+  let message = '';
+  try {
+    save.call({ attachmentsDir: atomicDir }, atomicSession, [
+      { name: 'ok.txt', mediaType: 'text/plain', data: Buffer.from('fine').toString('base64') },
+      { name: 'big.png', mediaType: 'image/png', data: big.toString('base64') },
+    ]);
+  } catch (error) { message = error.message; }
+  ok('批次里有一个超限就整批拒绝', /太大/.test(message), message);
+  const leftovers = fs.existsSync(path.join(atomicDir, atomicSession.id))
+    ? fs.readdirSync(path.join(atomicDir, atomicSession.id)).length
+    : 0;
+  ok('被拒的批次没有留下孤儿附件', leftovers === 0, String(leftovers));
+  fs.rmSync(atomicDir, { recursive: true, force: true });
+}
+
+/* —— 路径里带 % 的文件：cmd.exe 会展开 %VAR%，所以退回复制 —— */
+{
+  const percentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-attach-percent-'));
+  const oddName = path.join(percentDir, '100%done.txt');
+  fs.writeFileSync(oddName, 'percent');
+  const copied = save.call(workbench, session, [{ kind: 'file', name: '100%done.txt', path: oddName }]);
+  ok('含 % 的路径改成复制进附件目录', copied[0].file !== '' && copied[0].size === 7,
+    JSON.stringify({ file: copied[0].file, size: copied[0].size }));
+  ok('复制出来的内容正确', copied[0].file !== ''
+    && fs.readFileSync(copied[0].path, 'utf8') === 'percent');
+  fs.rmSync(percentDir, { recursive: true, force: true });
+}
+
 let wrongType = '';
 try { save.call(workbench, session, [{ kind: 'dir', name: '其实是文件', path: looseFile }]); }
 catch (error) { wrongType = error.message; }
@@ -167,6 +201,16 @@ ok('客户端认上传合计上限', clientSrc.includes('ATTACH_MAX_TOTAL_BYTES 
   && clientSrc.includes('uploadedBytes + file.size > ATTACH_MAX_TOTAL_BYTES'));
 ok('发送前再兜一层上限', clientSrc.includes('if (attachments.length > ATTACH_MAX_ITEMS)')
   && clientSrc.includes('if (uploadBytes > ATTACH_MAX_TOTAL_BYTES)'));
+ok('附件 chip 的 key 用下标（同名附件不会撞）', clientSrc.includes("key: 'att-' + attIndex")
+  && clientSrc.includes("key: 'att-file-' + attIndex")
+  && !clientSrc.includes('key: att.file || att.name'));
+{
+  /* 清空必须发生在 override 判断之外：空态建议卡那条路径以前不清附件，
+     再点一次会把同一批附件又传一遍。 */
+  const line = /setAttachments\(\[\]\);\s*\n\s*if \(override == null\) \{([^}]*)\}/.exec(clientSrc);
+  ok('override 发送后也清空附件', Boolean(line) && !line[1].includes('setAttachments'), line ? line[1].trim() : 'not found');
+}
+
 ok('服务端 413 不再写死 4MB', !src.includes('请求体超过 4MB') && src.includes('一次发送的内容太多，请分批发送'));
 ok('附件按钮是 DSH 的圆形态', /\.cw-add\{[^}]*border-radius:\s*999px/.test(clientSrc) && clientSrc.includes('var(--dsw-specific-selector'));
 

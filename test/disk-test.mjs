@@ -59,6 +59,32 @@ ok('Host 暴露 /disk 路由', src.includes("route === '/disk'") && src.includes
 ok('diskUsage 带 5 分钟缓存', /diskCache[\s\S]{0,200}5 \* 60 \* 1000/.test(src));
 ok('统计的是 CLI 记录目录', src.includes('claudeProjectsDir()')
   && src.includes("path.join(codexDir, 'sessions')") && src.includes("'archived_sessions'"));
+/* —— 分片异步扫描：同样的结果，但会让出事件循环 —— */
+{
+  const block2 = sliceBlock(src, 'async function scanTreeAsync(dirs, limit = 20000) {');
+  ok('抽到 scanTreeAsync()', Boolean(block2));
+  const factory = new Function('readdirSync', 'statSync', 'path', 'setImmediate', 'return ' + block2);
+  const scanTreeAsync = factory(fs.readdirSync, fs.statSync, path, setImmediate);
+  const asyncSize = await scanTreeAsync([root]);
+  ok('异步扫描结果与同步一致', asyncSize.files === 3 && asyncSize.bytes === 15, JSON.stringify(asyncSize));
+  const asyncLimited = await scanTreeAsync([root], 2);
+  ok('异步扫描也会标记截断', asyncLimited.files === 2 && asyncLimited.truncated === true);
+  ok('diskUsage 是异步的、路由会 await', /async diskUsage\(\)/.test(src) && src.includes('await this.diskUsage()'));
+}
+
+/* —— 截断时读数不能写成精确值 —— */
+{
+  const block3 = sliceBlock(clientSrc, 'const fmtDiskCount = (node) => {');
+  ok('抽到 fmtDiskCount()', Boolean(block3));
+  const fmtDiskCount = new Function(block3 + '\n return fmtDiskCount;')();
+  ok('正常读数', fmtDiskCount({ files: 123, truncated: false }) === '123 个',
+    fmtDiskCount({ files: 123, truncated: false }));
+  ok('截断时写「2 万+」', fmtDiskCount({ files: 20000, truncated: true }) === '2 万+',
+    fmtDiskCount({ files: 20000, truncated: true }));
+  ok('缺数据时不编造', fmtDiskCount(null) === '—' && fmtDiskCount({}) === '—');
+  ok('设置面板用它渲染', clientSrc.includes('fmtDiskCount(disk.claude)') && clientSrc.includes('fmtDiskCount(disk.codex)'));
+}
+
 ok('客户端打开设置时查 /disk', clientSrc.includes("api('/disk')"));
 ok('设置面板有占用读数', clientSrc.includes('CLI 记录占用：Claude ') && clientSrc.includes('Codex '));
 ok('读数带删除与 30 天说明', clientSrc.includes('删除会话会一起清掉对应记录；Claude 默认只保留 30 天。'));

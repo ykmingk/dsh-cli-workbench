@@ -217,6 +217,14 @@ window.__ModuleLoader__.load({
       if (value > 1024) return Math.round(value / 1024) + ' KB';
       return value + ' B';
     };
+    /* CLI 记录的文件数：Host 数到 2 万个就停（避免卡住），这时写「2 万+」——
+       不要把一个「至少这么多」的数字说得像精确值。 */
+    const fmtDiskCount = (node) => {
+      if (!node) return '—';
+      const files = Number(node.files);
+      if (!Number.isFinite(files)) return '—';
+      return node.truncated ? '2 万+' : files + ' 个';
+    };
     /* 与 DSH 的 token-format 同规则：517 / 12.2K / 517K / 1.2M */
     const fmtTokens = (n) => {
       if (n == null || n === '') return '—';
@@ -3540,11 +3548,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                 ? h('div', { className: 'cw-set-note cw-set-path' }, boot.dataDir)
                 : null,
               /* CLI 自己的转录不在插件数据目录里，但同样占 C 盘，顺手给一行读数。
-                 删除会话会连它们一起删（Claude 另有 30 天自动清理）。 */
+                 删除会话会连它们一起删（Claude 另有 30 天自动清理）。
+                 「个」可能是下限：统计到 2 万个文件就停了，这时写「2 万+」。 */
               h('div', { className: 'cw-set-note' },
                 disk && disk.claude && disk.codex
-                  ? 'CLI 记录占用：Claude ' + fmtBytes(disk.claude.bytes) + '（' + disk.claude.files + ' 个）· Codex '
-                    + fmtBytes(disk.codex.bytes) + '（' + disk.codex.files + ' 个）'
+                  ? 'CLI 记录占用：Claude ' + fmtBytes(disk.claude.bytes) + '（' + fmtDiskCount(disk.claude) + '）· Codex '
+                    + fmtBytes(disk.codex.bytes) + '（' + fmtDiskCount(disk.codex) + '）'
                     + (disk.attachments && disk.attachments.files ? ' · 附件 ' + fmtBytes(disk.attachments.bytes) : '')
                   : diskFailed ? 'CLI 记录占用：暂时读不到' : 'CLI 记录占用：统计中…'),
               h('div', { className: 'cw-set-note' }, '删除会话会一起清掉对应记录；Claude 默认只保留 30 天。'),
@@ -5447,7 +5456,12 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             method: 'POST',
             body: JSON.stringify({ text: content, attachments: wireAttachments(attachments) }),
           });
-          if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); setAttachments([]); }
+          /* 附件发出去就清空，无论是不是 override：
+             空态建议卡（override）那条路径以前不清，再点一次会把同一批附件
+             又传一遍。草稿只在打字路径（override == null）清，免得把用户
+             正在写的东西抹掉。 */
+          setAttachments([]);
+          if (override == null) { setDraft(''); setFileRef(''); setSkillRefs([]); }
           // 计划只对下一条消息有效：发出去就复位，免得下一条还带着旧指令
           if (planMode) { setPlanMode(false); showToast('计划指令已随这条消息发出，计划模式已关'); }
           refreshSessions();
@@ -6147,7 +6161,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               atts.length ? h('div', { className: 'cw-msg-atts' }, atts.map((att, attIndex) => (
                 att.kind === 'image' && att.file
                   ? h('img', {
-                    key: att.file || attIndex,
+                    /* key 必须唯一：两个同名的「路径引用」附件 file 都是空的，
+                       用名字当 key 会撞（React 警告 + 渲染错位）。 */
+                    key: 'att-' + attIndex,
                     className: 'cw-msg-att-img',
                     /* 图片由 Host 的 /attachment 端点回放：路径在数据目录里，
                        /fs/file 的边界只放行会话工作目录，读不到这里。 */
@@ -6155,7 +6171,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                     alt: att.name || '图片',
                     title: att.name || '图片',
                   })
-                  : h('span', { key: att.file || att.name || attIndex, className: 'cw-msg-att-file', title: att.name || '' },
+                  : h('span', { key: 'att-file-' + attIndex, className: 'cw-msg-att-file', title: att.name || '' },
                     h(Icon, { name: att.kind === 'dir' ? 'folder' : 'file', size: 14 }),
                     h('span', { className: 'cw-attach-name' }, att.name || '附件'))
               ))) : null,
