@@ -1803,6 +1803,7 @@ button.cw-pill[aria-expanded="true"]{
 /* —— 从 CLI 导入会话 —— */
 .cw-import{ width: 620px; }
 .cw-import-body{ padding: 14px 18px 18px; }
+.cw-import-search{ margin-top: 12px; height: 30px; }
 .cw-import-empty{
   padding: 26px 0; text-align: center; font-size: var(--cw-fs-sm); color: var(--cw-subtle);
 }
@@ -1833,6 +1834,7 @@ button.cw-pill[aria-expanded="true"]{
 }
 .cw-import-foot{ justify-content: flex-end; }
 .cw-import-all{ margin-right: auto; }
+.cw-import-picked{ color: var(--cw-subtle); font-size: var(--cw-fs-xs); margin-left: 4px; }
 .cw-import-spacer{ flex: 1; }
 
 /* —— 自定义规则（CLAUDE.md / AGENTS.md）编辑器 —— */
@@ -3613,8 +3615,27 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         return () => { alive = false; };
       }, []);
 
+      /* Esc 关闭：焦点在搜索框里也不会被输入法吃掉（只在没有正在导入时响应） */
+      useEffect(() => {
+        const onKey = (event) => {
+          if (event.key !== 'Escape' || busy) return;
+          event.stopPropagation();
+          onClose();
+        };
+        if (typeof document === 'undefined' || !document.addEventListener) return undefined;
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+      }, [busy, onClose]);
+
+      const [query, setQuery] = useState('');
       const keyOf = (entry) => entry.provider + ':' + entry.nativeId;
-      const selectable = entries.filter((entry) => !entry.missingCwd);
+      /* 搜索只影响「看得见哪些」，已经勾上的不会因为搜索而丢：清空搜索后
+         之前的选择还在（勾选是跨搜索累积的）。 */
+      const needle = query.trim().toLowerCase();
+      const visible = needle
+        ? entries.filter((entry) => (entry.title + ' ' + entry.cwd).toLowerCase().includes(needle))
+        : entries;
+      const selectable = visible.filter((entry) => !entry.missingCwd);
       const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(keyOf(entry)));
 
       const toggle = (entry) => {
@@ -3628,7 +3649,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       };
 
       const toggleAll = () => {
-        setSelected(allSelected ? new Set() : new Set(selectable.map(keyOf)));
+        setSelected((current) => {
+          const next = new Set(current);
+          for (const entry of selectable) {
+            const key = keyOf(entry);
+            if (allSelected) next.delete(key); else next.add(key);
+          }
+          return next;
+        });
       };
 
       const submit = async () => {
@@ -3651,7 +3679,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         { provider: 'codex', label: 'Codex' },
       ].map((group) => ({
         ...group,
-        rows: entries.filter((entry) => entry.provider === group.provider),
+        rows: visible.filter((entry) => entry.provider === group.provider),
       })).filter((group) => group.rows.length);
 
       return h('div', {
@@ -3668,12 +3696,33 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           ),
           h('div', { className: 'cw-dlg-body cw-import-body' },
             h('div', { className: 'cw-hintline' }, '把终端里跑过的会话登记进来；历史仍留在 CLI 那边，导入后可以接着聊，也能在这里删除。'),
+            !loading && entries.length ? h('label', { className: 'cw-search cw-import-search' },
+              h(Icon, { name: 'search', size: 14 }),
+              h('input', {
+                value: query,
+                placeholder: '搜标题或目录',
+                'aria-label': '搜索要导入的会话',
+                disabled: busy,
+                onChange: (event) => setQuery(event.target.value),
+              }),
+              query
+                ? h('button', {
+                  type: 'button',
+                  className: 'cw-clear',
+                  'aria-label': '清空搜索',
+                  onClick: (event) => { event.preventDefault(); setQuery(''); },
+                }, h(Icon, { name: 'x', size: 11 }))
+                : null,
+            ) : null,
             loading ? h('div', { className: 'cw-import-empty' }, '正在扫描 CLI 记录…') : null,
             loadError ? h('div', { className: 'cw-ws-del-error', role: 'alert' }, '扫描失败：' + loadError) : null,
             !loading && !loadError && !entries.length
               ? h('div', { className: 'cw-import-empty' }, '没有发现新会话：CLI 记录里的会话都已经在工作台里了。')
               : null,
-            !loading && entries.length ? h('div', { className: 'cw-import-list' },
+            !loading && entries.length && !visible.length
+              ? h('div', { className: 'cw-import-empty' }, '没有匹配「' + query.trim() + '」的会话。')
+              : null,
+            !loading && visible.length ? h('div', { className: 'cw-import-list' },
               groups.map((group) => h('div', { key: group.provider, className: 'cw-import-group' },
                 h('div', { className: 'cw-import-grouphead' },
                   h('span', null, group.label),
@@ -3716,6 +3765,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
               onClick: toggleAll,
               disabled: busy || !selectable.length,
             }, allSelected ? '取消全选' : '全选 ' + selectable.length + ' 个'),
+            selected.size ? h('span', { className: 'cw-import-picked' }, '已选 ' + selected.size + ' 个') : null,
             h('span', { className: 'cw-import-spacer' }),
             h('button', { onClick: onClose, disabled: busy }, '取消'),
             h('button', {
@@ -4296,8 +4346,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const [newInitial, setNewInitial] = useState({ provider: 'claude', cwd: '' });
       const [pendingPrompt, setPendingPrompt] = useState('');
       const [showSettings, setShowSettings] = useState(false);
-      /* 「从 CLI 导入会话」弹窗：设置里点「扫描并导入…」打开 */
-      const [importOpen, setImportOpen] = useState(false);
       /* 切到别的面板时 DSH 会卸载本面板。这里记下当时的 URL，切回来时如果 DSH
          已经回到了某个会话（面板不再选中），就把面板重新打开——否则会看到
          「明明在会话列表里，工作台却被换成了聊天界面」。 */
@@ -4418,6 +4466,9 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const editorCaretRef = useRef(null);
       const [dragging, setDragging] = useState(false);
       const modelMenuRef = useRef(null);
+      /* 「从 CLI 导入会话」弹窗：设置里点「扫描并导入…」打开。
+         声明放在所有状态之后——状态槽是按顺序取的，插在中间会顶掉后面的槽。 */
+      const [importOpen, setImportOpen] = useState(false);
 
       /* 模型浮层相对模型按钮居中：按钮很小、浮层很宽（533px 起），
          纯 CSS 的 left:50% + translateX(-50%) 会把左边顶出屏幕，
