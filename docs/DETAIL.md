@@ -141,6 +141,7 @@ token 用量、缓存命中、上下文占用、token 速度不在右侧检查�
   - 夹进对话区滚动容器内（左右各 8px），不会飘到右栏。
   - 为什么不用包围盒中心：多行选区的包围盒会被最长那行拉宽，中心经常落在首行右侧的空白上——实测按钮离首行文字 158px；改成贴首行右沿后是 6px（`.dev/shot-quotebtn.mjs` 在真实浏览器里框选后量的）。
 - **收起时机**：点别处、按 Esc、滚动都会收起——`fixed` 不跟着内容走，留着就是错位的按钮。
+- **底色必须不透明**：这颗按钮浮在正文上，`--cw-hover` / `--cw-alias-interactive-bg-hover` 之类是 8% 透明度的叠加色，用上去后面的文字会透出来（看起来就是「鼠标移上去变透明」）。所以底色用 `--dsw-alias-bg-layer-1`，悬停/按下用 `-hover-solid`（不透明）；「回到最新」那颗同理，悬停用 `--dsw-alias-button-floating-hover`。
 - **输入框是 contenteditable**（`.cw-editor`），不再是 textarea——只有这样才能把引用画成一枚真正的「块」嵌在正文流里。正文的真相仍是字符串 `draft`：`【原文】` 是引用在草稿里的编码，`parseDraft()` 把它切成片段，`syncEditor()` 按片段画成 `.cw-editor-quote`（`“` + 单行截断的原文，`contenteditable=false` + `data-quote`）；用户打字时 `serializeEditor()` 把 DOM 还原回 `【…】` 文本。**只有草稿与 DOM 不一致时才重画**，否则每次输入都会把光标顶走。
   - 视觉照 DSH composer 截图：引文用链接色 `--dsw-alias-link`（浅色主题 `#4176e6`），**没有底色、边框、圆角**；用户自己的文字仍是正文色，两者在同一行。长的单行省略号截断（`max-width: min(78%, 520px)`）。
 - **插入位置**：点引用时焦点/选区其实在消息那边，所以优先用编辑器里**最后一次记住的光标**（`editorCaretRef`，在 input / keyup / mouseup 时更新），没有才接末尾；插完光标落到引用后面的空格之后。

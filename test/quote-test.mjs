@@ -197,6 +197,11 @@ console.log('\n[4] 接线：contenteditable 输入框 + 内联引用块');
     && /\.cw-editor-quote\{[^}]*\}/.test(srcClient)
     && !/\.cw-editor-quote\{[^}]*background/.test(srcClient)
     && !/\.cw-editor-quote\{[^}]*border/.test(srcClient));
+  /* 按钮浮在正文上：底色与悬停底色都必须不透明，否则后面的文字会透出来 */
+  ok('按钮底色是不透明层色', /\.cw-quotebtn\{[^}]*background:\s*var\(--dsw-alias-bg-layer-1/.test(srcClient));
+  ok('悬停/按下用不透明的 -solid，不用 8% 的 --cw-hover',
+    /\.cw-quotebtn:hover[^{]*\{[^}]*-solid/.test(srcClient)
+    && !/\.cw-quotebtn:hover[^{]*\{[^}]*--cw-hover/.test(srcClient));
 }
 
 console.log('\n结果：' + pass + ' 通过 / ' + fail + ' 失败');

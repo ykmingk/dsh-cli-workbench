@@ -905,7 +905,8 @@ window.__ModuleLoader__.load({
   color: var(--cw-text); background: var(--cw-menu-bg); backdrop-filter: var(--cw-menu-blur);
   box-shadow: var(--cw-elev-prominent); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
 }
-.cw-tolatest:hover{ background: var(--cw-hover); }
+/* 悬停不能退成 8% 的 --cw-hover：这颗浮在正文上，退成半透明就等于「消失」 */
+.cw-tolatest:hover{ background: var(--dsw-alias-button-floating-hover, var(--cw-menu-bg)); }
 .cw-tolatest .cw-ic{ width: 15px; height: 15px; }
 .cw-page{ max-width: 860px; margin: 0 auto; }
 
@@ -968,11 +969,15 @@ window.__ModuleLoader__.load({
   position: fixed; z-index: 96; height: 28px; padding: 0 9px 0 7px;
   display: inline-flex; align-items: center; gap: 4px;
   border: .5px solid var(--cw-border-2); border-radius: var(--cw-radius-sm);
-  background: var(--cw-bg); color: var(--cw-text);
+  /* 必须是不透明底：按钮浮在正文上，--cw-hover 那种半透明 token 会让后面的
+     文字透出来（鼠标移上去像「变透明」）。DSH 那颗也是实心白底。 */
+  background: var(--dsw-alias-bg-layer-1, var(--cw-bg)); color: var(--cw-text);
   font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); white-space: nowrap;
   box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
 }
-.cw-quotebtn:hover{ background: var(--cw-hover); }
+/* 悬停/按下都用 -solid 版（不透明）：普通 -hover / -active 是 8%~10% 透明度的
+   叠加色，浮在正文上时会让文字透出来。 */
+.cw-quotebtn:hover, .cw-quotebtn:active{ background: var(--dsw-alias-interactive-bg-hover-solid, var(--cw-sub)); }
 .cw-quotebtn .cw-ic{ width: 12px; height: 12px; color: var(--cw-subtle); }
 /* 内联引用：草稿里就是【原文】这串文字（跟正文一起可编辑），所以样式只出现在
    发出去的气泡里——浅底 + 左侧竖线 + 弱化色，和输入框里看到的形状对得上。 */
