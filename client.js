@@ -801,7 +801,7 @@ window.__ModuleLoader__.load({
   font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-subtle); display: flex; align-items: center; gap: 6px;
 }
 .cw-batch{ display: flex; align-items: center; gap: 6px; padding: 8px; border-top: .5px solid var(--cw-border); background: var(--cw-bg); }
-.cw-batch .cw-bcount{ flex: 1; font-size: var(--cw-fs-xs); color: var(--cw-subtle); white-space: nowrap; }
+.cw-batch .cw-bcount{ flex: 1; min-width: 0; font-size: var(--cw-fs-xs); color: var(--cw-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cw-batch button{ height: 26px; padding: 0 9px; border: 0; border-radius: var(--cw-radius-sm); box-shadow: inset 0 0 0 .5px var(--cw-border-2); font-size: var(--cw-fs-xs); white-space: nowrap; }
 .cw-batch button:hover{ background: var(--cw-hover); }
 .cw-batch button.danger{ color: var(--cw-danger); }
@@ -4549,11 +4549,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         visible.push({ type: 'group', group, visibleSessions: shown, hidden: group.sessions.length - shown.length });
       }
       const allVisible = filtered;
-      // 「全选」只应勾选**界面上真的看得见**的那些：折叠组里和被 limit 截断的
-      // 会话虽然属于当前过滤结果，但用户看不到，一起勾上再批量删就是误删。
       const shownIds = new Set();
       for (const entry of visible) for (const session of entry.visibleSessions) shownIds.add(session.id);
-      const selectable = allVisible.filter((session) => shownIds.has(session.id));
+      /* 「全选」= 选中当前过滤结果里的**全部**会话，包括收起分组里和「展开剩余」里的。
+         早先只勾可见的（1.0.8 的审计改动），但用户点「全选」就是想一次处理完，
+         只勾看得见的几个反而像漏选；误操作的风险靠「已选 N 项（含 M 个未显示）」
+         和删除确认框里的条数来兜。 */
+      const selectable = allVisible;
+      const hiddenIds = allVisible.filter((session) => !shownIds.has(session.id)).map((session) => session.id);
+      const hiddenSelected = hiddenIds.filter((id) => selected.has(id)).length;
+      const selectedAll = allVisible.length > 0 && allVisible.every((session) => selected.has(session.id));
       return h('aside', { className: 'cw-rail' + (batch ? ' batch' : ''), 'data-provider': provider },
         h('div', { className: 'cw-rail-head' },
           h('div', { className: 'cw-rail-title-row' },
@@ -4682,8 +4687,13 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           )),
         ),
         batch ? h('div', { className: 'cw-batch' },
-          h('span', { className: 'cw-bcount' }, '已选 ' + selected.size + ' 项'),
-          h('button', { onClick: () => selectAll(selectable) }, '全选'),
+          h('span', {
+            className: 'cw-bcount',
+            title: hiddenSelected ? '其中 ' + hiddenSelected + ' 个在收起的分组或「展开剩余」里，当前看不到' : '',
+          }, '已选 ' + selected.size + ' 项' + (hiddenSelected ? '（含 ' + hiddenSelected + ' 个未显示）' : '')),
+          h('button', {
+            onClick: () => selectAll(selectedAll ? [] : selectable),
+          }, selectedAll ? '取消全选' : '全选'),
           h('button', { onClick: onArchiveSelected }, '归档'),
           h('button', { className: 'danger', onClick: onDeleteSelected }, '删除'),
           h('button', { onClick: onExitBatch }, '退出'),
@@ -7469,7 +7479,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
     return {
       inject: ['slots'],
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
-      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, QueueCard, FilesPanel, Inspector, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
+      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, QueueCard, FilesPanel, Inspector, Rail, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
                 try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
         try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }

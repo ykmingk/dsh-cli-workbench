@@ -76,8 +76,11 @@ ok('P2-1 有 ErrorBoundary 并用它包住 App',
 ok('P2-2 archive 回退按助手过滤',
   /const next = sessions\.find\(\(item\) => item\.id !== id && !item\.archived\s*\n\s*&& \(item\.provider \|\| 'claude'\) === topProvider\)/.test(srcClient));
 
-// P2-3 全选只勾可见
-ok('P2-3 全选改用可见集合', srcClient.includes('selectAll(selectable)') && srcClient.includes('const selectable = allVisible.filter'));
+// P2-3（1.0.61 反转）「全选」改为选中当前过滤结果的全部会话，包括收起分组与
+// 「展开剩余」里的；误操作风险改由「已选 N 项（含 M 个未显示）」+ 删除确认框兜。
+ok('P2-3 全选覆盖未显示的会话', srcClient.includes('const selectable = allVisible;')
+  && srcClient.includes('const hiddenSelected = hiddenIds.filter((id) => selected.has(id)).length')
+  && srcClient.includes('个未显示'));
 
 // P2-4 批量删除逐条容错
 ok('P2-4 批量删除逐条 try', srcClient.includes("catch (error) { failed.push({ id, message: error.message }); }"));
