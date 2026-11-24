@@ -168,6 +168,10 @@ const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out', '.next', '.turbo', 'target', '.venv', 'venv',
   '__pycache__', '.idea', '.vscode', 'coverage', '.cache',
 ]);
+/* 文件名搜索的边界：最多看 2 万个条目、返回 100 条。仓库再大也不能把
+   Host 卡住（这个路由是同步 walk，跑在请求线程里）。 */
+const SEARCH_MAX_VISITS = 20000;
+const SEARCH_MAX_RESULTS = 100;
 
 
 
@@ -1803,6 +1807,12 @@ class Workbench {
       const safe = this.safePath(session, dir);
       if (!safe) return json(res, 403, { error: 'path outside workspace' });
       return json(res, 200, this.tree(session, safe, Number(url.searchParams.get('depth') || 2)));
+    }
+    if (route === '/fs/search' && method === 'GET') {
+      /* 右栏放大镜：只在会话自己的工作目录里按名字找，不接受任意路径。 */
+      const session = this.session(url.searchParams.get('session') || '');
+      if (!session) return json(res, 404, { error: 'session not found' });
+      return json(res, 200, this.searchFiles(session, url.searchParams.get('q') || ''));
     }
     if (route === '/fs/file' && method === 'GET') {
       const session = this.session(url.searchParams.get('session') || '');
@@ -3542,6 +3552,58 @@ class Workbench {
   }
 
   /* ------------------------------------------------------------- rules */
+
+  /**
+   * 在工作目录里按**文件名 / 相对路径**搜索（递归、只读）。
+   *
+   * 右栏那个放大镜用的。有界：跳过 node_modules/.git 这类目录，最多访问
+   * SEARCH_MAX_VISITS 个条目、返回 SEARCH_MAX_RESULTS 条；到上限就把
+   * truncated 交给界面，让用户把关键词写具体点，而不是等一个跑不完的请求。
+   */
+  searchFiles(session, query) {
+    /* 统一成正斜杠再比：Windows 上 relative 是 `src\main.js`，但用户习惯敲
+       `src/ma`，不归一化就会「明明有却搜不到」。 */
+    const needle = text(query).trim().toLowerCase().replace(/\\/g, '/');
+    const root = session.cwd;
+    const out = { root, rootName: path.basename(root) || root, query: text(query).trim(), results: [], truncated: false, scanned: 0 };
+    if (!needle) return out;
+    let truncated = false;
+    let visited = 0;
+    const results = out.results;
+    const walk = (dir) => {
+      if (truncated) return;
+      let children;
+      try { children = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      children.sort((a, b) => {
+        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      for (const child of children) {
+        if (truncated) return;
+        if (child.name.startsWith('.git') || SKIP_DIRS.has(child.name)) continue;
+        if (visited >= SEARCH_MAX_VISITS) { truncated = true; return; }
+        visited += 1;
+        const full = path.join(dir, child.name);
+        if (child.isDirectory()) { walk(full); continue; }
+        const relative = path.relative(root, full);
+        /* 命中规则：相对路径或文件名包含关键词（不区分大小写，斜杠方向无关）。
+           输「src/ma」能找 src 下的，输「utils」能找任何同名文件。 */
+        const hay = relative.toLowerCase().replace(/\\/g, '/');
+        if (!hay.includes(needle)) continue;
+        results.push({
+          name: child.name,
+          path: full,
+          relative,
+          isNew: session.files.some((file) => path.resolve(file.path) === path.resolve(full)),
+        });
+        if (results.length >= SEARCH_MAX_RESULTS) { truncated = true; return; }
+      }
+    };
+    walk(root);
+    out.truncated = truncated;
+    out.scanned = visited;
+    return out;
+  }
 
   /**
    * 项目指令文件的位置。两个 CLI 都读「就近的、同名的那一份」：

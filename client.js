@@ -1667,7 +1667,7 @@ button.cw-pill[aria-expanded="true"]{
 }
 .cw-chipbar-tool:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-chipbar-tool.is-on{ background: var(--cw-fill); color: var(--cw-text); }
-/* 运行状态页签上方的标题行（它不在文档页签里，单独给一个小标题） */
+/* 运行状态现在是页签，不再需要单独的小标题行（样式留着给旧样张/回退用） */
 .cw-runhead{
   flex: none; display: flex; align-items: center; gap: 7px;
   padding: 10px 14px 0; font-size: var(--cw-fs-sm); color: var(--cw-text);
@@ -1809,7 +1809,44 @@ button.cw-pill[aria-expanded="true"]{
 
 /* 文件面板 */
 .cw-filehead{ display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: var(--cw-fs-xs); line-height: var(--cw-lh-xs); color: var(--cw-subtle); }
-.cw-filehead .new-count{ margin-left: auto; background: var(--cw-module); color: var(--cw-text); border-radius: var(--cw-radius-pill); padding: 1px 7px; font-size: var(--cw-fs-micro); font-weight: var(--cw-fw-medium); }
+.cw-filehead .new-count{ background: var(--cw-module); color: var(--cw-text); border-radius: var(--cw-radius-pill); padding: 1px 7px; font-size: var(--cw-fs-micro); font-weight: var(--cw-fw-medium); }
+.cw-filehead-name{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-filehead-fill{ flex: 1; min-width: 4px; }
+/* 文件工具按钮（刷新 / 搜索）：和 DSH 右栏一样贴在这行末尾，28px 见方 */
+.cw-filetool{
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--cw-radius-sm);
+  background: transparent; color: var(--cw-subtle); cursor: pointer;
+}
+.cw-filetool:hover:not([disabled]){ background: var(--cw-hover); color: var(--cw-text); }
+.cw-filetool.is-on{ background: var(--cw-fill); color: var(--cw-text); }
+.cw-filetool[disabled]{ opacity: .45; cursor: default; }
+.cw-filetool .cw-ic{ width: 13px; height: 13px; }
+/* 搜索条：一条扁输入框，贴在文件头下面 */
+.cw-filesearch{
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 0 8px;
+  height: 28px; border: .5px solid var(--cw-border-3); border-radius: var(--cw-radius-sm);
+  background: var(--cw-bg); color: var(--cw-subtle);
+}
+.cw-filesearch .cw-ic{ flex: none; }
+.cw-filesearch-input{
+  flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent;
+  color: var(--cw-text); font-size: var(--cw-fs-xs);
+}
+.cw-filesearch-hint{ flex: none; font-size: var(--cw-fs-micro); color: var(--cw-subtle); }
+.cw-filesearch-x{
+  flex: none; width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0;
+  border: 0; border-radius: 3px; background: transparent; color: var(--cw-subtle); cursor: pointer;
+}
+.cw-filesearch-x:hover{ background: var(--cw-hover); color: var(--cw-text); }
+.cw-filesearch-note{ padding: 4px 2px 8px; font-size: var(--cw-fs-xs); color: var(--cw-subtle); line-height: 1.6; }
+.cw-filesearch-note.is-error{ color: var(--cw-danger); }
+/* 搜索结果右侧的相对路径：文件名已经占主位，路径用弱色补上下文 */
+.cw-filesearch-rel{
+  margin-left: auto; padding-left: 8px; min-width: 0; flex: 0 1 auto;
+  font-size: var(--cw-fs-micro); color: var(--cw-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .cw-tree-row{ display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: var(--cw-radius-sm); font-size: var(--cw-fs-sm); line-height: var(--cw-lh-sm); color: var(--cw-subtle); }
 .cw-tree-row .cw-ic{ width: 13px; height: 13px; }
 .cw-tree-row.dir{ color: var(--cw-text); font-weight: var(--cw-fw-medium); }
@@ -2626,15 +2663,125 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       );
     }
 
-    function FilesPanel({ tree, loading, onOpen, highlight }) {
-      if (loading && !tree) return h('div', { className: 'cw-empty-note' }, '正在读取文件…');
-      if (!tree) return h('div', { className: 'cw-empty-note' }, '还没有工作目录');
+    /**
+     * 右栏「文件」面板：文件树 + 刷新 / 搜索。
+     *
+     * 刷新按钮重读树（会话跑完一轮后目录可能变了）；搜索按钮展开一个输入框，
+     * 一边打字一边查（Host 的 /fs/search 在工作目录里递归找名字，有上限）。
+     * 搜索只是**看和点开**，不改任何文件。
+     */
+    function FilesPanel({ tree, loading, onOpen, highlight, sessionId, onRefresh }) {
+      const [searchOpen, setSearchOpen] = useState(false);
+      const [query, setQuery] = useState('');
+      const [found, setFound] = useState(null);   // null = 还没搜；{ results, truncated, ... }
+      const [searching, setSearching] = useState(false);
+      const [searchError, setSearchError] = useState('');
+      const inputRef = useRef(null);
+
+      useEffect(() => {
+        if (!searchOpen) return undefined;
+        const node = inputRef.current;
+        if (node) { node.focus(); node.select(); }
+        return undefined;
+      }, [searchOpen]);
+
+      /* 输入防抖 200ms：不每按一个键都打一次 Host */
+      useEffect(() => {
+        if (!searchOpen) { setFound(null); setSearchError(''); return undefined; }
+        const keyword = query.trim();
+        if (!keyword || !sessionId) { setFound(null); setSearchError(''); return undefined; }
+        let alive = true;
+        setSearching(true);
+        const timer = setTimeout(() => {
+          api('/fs/search?session=' + encodeURIComponent(sessionId) + '&q=' + encodeURIComponent(keyword))
+            .then((data) => { if (alive) { setFound(data); setSearchError(''); } })
+            .catch((error) => { if (alive) { setFound(null); setSearchError(error.message); } })
+            .finally(() => { if (alive) setSearching(false); });
+        }, 200);
+        return () => { alive = false; clearTimeout(timer); };
+      }, [query, searchOpen, sessionId]);
+
+      const closeSearch = () => { setSearchOpen(false); setQuery(''); setFound(null); setSearchError(''); };
+
+      const head = h('div', { className: 'cw-filehead' },
+        h(Icon, { name: 'folder', size: 13 }),
+        h('span', { className: 'cw-filehead-name' }, tree ? tree.rootName : '工作目录'),
+        h('span', { className: 'cw-filehead-fill' }),
+        tree ? h('span', { className: 'new-count' }, (Number(tree.newCount) || 0) + ' 个新文件') : null,
+        h('button', {
+          type: 'button',
+          className: 'cw-filetool',
+          title: '刷新文件列表',
+          'aria-label': '刷新文件列表',
+          disabled: !onRefresh || loading,
+          onClick: () => onRefresh && onRefresh(),
+        }, h(Icon, { name: 'refresh', size: 13 })),
+        h('button', {
+          type: 'button',
+          className: 'cw-filetool' + (searchOpen ? ' is-on' : ''),
+          title: searchOpen ? '收起搜索' : '搜索文件（按名字，递归整个工作目录）',
+          'aria-label': '搜索文件',
+          onClick: () => (searchOpen ? closeSearch() : setSearchOpen(true)),
+        }, h(Icon, { name: 'search', size: 13 })),
+      );
+
+      const searchBar = searchOpen ? h('div', { className: 'cw-filesearch' },
+        h(Icon, { name: 'search', size: 12 }),
+        h('input', {
+          ref: inputRef,
+          className: 'cw-filesearch-input',
+          value: query,
+          placeholder: '搜索文件名，例如 utils 或 src/ma',
+          'aria-label': '搜索文件名',
+          onChange: (event) => setQuery(event.target.value),
+          onKeyDown: (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeSearch(); } },
+        }),
+        searching ? h('span', { className: 'cw-filesearch-hint' }, '搜索中…') : null,
+        query ? h('button', {
+          type: 'button',
+          className: 'cw-filesearch-x',
+          title: '清空',
+          'aria-label': '清空搜索',
+          onClick: () => { setQuery(''); if (inputRef.current) inputRef.current.focus(); },
+        }, h(Icon, { name: 'x', size: 10 })) : null,
+      ) : null;
+
+      /* 搜索态：结果列表（文件名 + 相对路径），点一行直接预览 */
+      if (searchOpen && query.trim()) {
+        const results = found ? found.results || [] : [];
+        return h('div', null,
+          head,
+          searchBar,
+          searchError ? h('div', { className: 'cw-filesearch-note is-error' }, '搜索失败：' + searchError) : null,
+          !searchError && !searching && found && !results.length
+            ? h('div', { className: 'cw-filesearch-note' }, '没有匹配「' + query.trim() + '」的文件。')
+            : null,
+          results.length
+            ? h('div', null,
+              results.map((entry) => h('div', {
+                key: entry.path,
+                className: 'cw-tree-row file' + (highlight === entry.path ? ' is-hi' : ''),
+                title: entry.path,
+                onClick: () => onOpen(entry.path),
+              },
+              h(Icon, { name: 'file', size: 13 }),
+              h('span', { className: 'name' }, entry.name),
+              entry.isNew ? h('span', { className: 'new-tag' }, '新') : null,
+              h('span', { className: 'cw-filesearch-rel' }, entry.relative),
+              )),
+              found && found.truncated
+                ? h('div', { className: 'cw-filesearch-note' }, '结果太多（最多 100 条，已扫 ' + found.scanned + ' 项），把关键词写具体点。')
+                : null,
+            )
+            : null,
+        );
+      }
+
+      if (loading && !tree) return h('div', null, head, searchBar, h('div', { className: 'cw-empty-note' }, '正在读取文件…'));
+      if (!tree) return h('div', null, head, searchBar, h('div', { className: 'cw-empty-note' }, '还没有工作目录'));
       return h('div', null,
-        h('div', { className: 'cw-filehead' },
-          h(Icon, { name: 'folder', size: 13 }),
-          h('span', null, tree.rootName),
-          h('span', { className: 'new-count' }, (Number(tree.newCount) || 0) + ' 个新文件'),
-        ),
+        head,
+        searchBar,
         h('div', null, (tree.entries || []).map((entry) => h('div', {
           key: entry.path,
           className: 'cw-tree-row ' + entry.type + (highlight === entry.path ? ' is-hi' : ''),
@@ -2642,7 +2789,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           onClick: entry.type === 'file' ? () => onOpen(entry.path) : undefined,
           title: entry.path,
         },
-        h(Icon, { name: entry.type === 'dir' ? 'folder' : entry.isNew ? 'file' : 'file', size: 13 }),
+        h(Icon, { name: entry.type === 'dir' ? 'folder' : 'file', size: 13 }),
         h('span', { className: 'name' }, entry.name + (entry.type === 'dir' ? '/' : '')),
         entry.isNew ? h('span', { className: 'new-tag' }, '新') : null,
         ))),
@@ -3422,7 +3569,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       }
       if (preview && preview.kind === 'html') docs.push({ id: 'page', label: '页面', icon: 'globe' });
       const move = (event) => {
-        const list = ['files', ...docs.map((doc) => doc.id)];
+        const list = ['files', 'run', ...docs.map((doc) => doc.id)];
         if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
         event.preventDefault();
         const index = list.indexOf(tab);
@@ -3453,14 +3600,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       return h(React.Fragment, null,
         h('div', { className: 'cw-chipbar', role: 'tablist', 'aria-label': '右栏', onKeyDown: move },
           chip('files', '文件', 'tree', false),
+          /* 运行状态也做成页签（和「文件」并列），不再是贴在右边的一个小图标按钮：
+             DSH 的右栏就是「文件夹 / 浏览器」这种页签式，图标按钮藏在角落会被漏掉。 */
+          chip('run', '运行状态', 'gauge', false),
           docs.map((doc) => chip(doc.id, doc.label, doc.icon, doc.closable)),
           h('span', { className: 'cw-chipbar-fill' }),
-          tab === 'run' ? null : h('button', {
-            className: 'cw-chipbar-tool' + (tab === 'run' ? ' is-on' : ''),
-            title: '运行状态',
-            'aria-label': '运行状态',
-            onClick: () => setTab('run'),
-          }, h(Icon, { name: 'gauge', size: 14 })),
           onClose ? h('button', {
             className: 'cw-chipbar-tool',
             title: '收起右栏',
@@ -3468,11 +3612,6 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             onClick: onClose,
           }, h(Icon, { name: 'x', size: 13 })) : null,
         ),
-        tab === 'run' ? h('div', { className: 'cw-runhead' },
-          h(Icon, { name: 'gauge', size: 13 }),
-          h('span', { className: 'cw-runhead-title' }, '运行状态'),
-          h('button', { className: 'cw-btn sm', onClick: () => setTab('files') }, '看文件'),
-        ) : null,
         h('div', {
           className: 'cw-insp-body',
           id: 'cw-panel-' + tab,
@@ -3483,7 +3622,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
           /* 预览标签还在、但文件已经被关掉：给一句提示而不是空白 */
           tab === 'preview' && preview ? h(PreviewPanel, { preview, onSave, onOpen, onLocate }) : null,
           tab === 'preview' && !preview ? h('div', { className: 'cw-empty-note' }, '在「文件」里点一个文件开始预览。') : null,
-          tab === 'files' ? h(FilesPanel, { tree, loading: treeLoading, onOpen: onOpenFile, highlight }) : null,
+          tab === 'files' ? h(FilesPanel, {
+            tree,
+            loading: treeLoading,
+            onOpen: onOpenFile,
+            highlight,
+            sessionId: session && session.id,
+            onRefresh: onRefreshTree,
+          }) : null,
           tab === 'page' ? h(PagePanel, { preview, onOpen, onCopy: copyPageUrl, onLocate }) : null,
         ),
       );
@@ -4622,8 +4768,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       }, []);
       /* 「自定义规则」编辑器：CLAUDE.md / AGENTS.md 的读写入口 */
       const [rulesOpen, setRulesOpen] = useState(false);
-      /* 右栏默认落在「文件」（跟 DSH 一样先看文件树）；「运行状态」在标签条右端的
-         一个小图标按钮里，点一下切过去，不再抢默认视野。 */
+      /* 右栏默认落在「文件」（跟 DSH 一样先看文件树）；「运行状态」是它旁边的
+         第二个页签，点一下切过去，不抢默认视野。 */
       const [inspTab, setInspTab] = useState('files');
       const [tree, setTree] = useState(null);
       const [treeLoading, setTreeLoading] = useState(false);
@@ -7292,7 +7438,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
     return {
       inject: ['slots'],
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
-      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, QueueCard, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
+      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, QueueCard, FilesPanel, Inspector, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
                 try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
         try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }
