@@ -160,6 +160,16 @@ console.log('\n[3] 选中的里有看不见的：条上要明说');
   })());
 }
 
+console.log('\n[3b] 勾选跨搜索累积：不在当前列表的也要说明');
+{
+  /* 搜「a1」只剩一条，但之前勾过 b1；条上要写「1 个不在当前列表」 */
+  const tree = render({ query: 'a1', selected: new Set(['a1', 'b1']) });
+  const count = byClass(tree, 'cw-bcount')[0];
+  const label = String((count.children || [])[0] || '');
+  ok('计数里说明不在当前列表的个数', label.includes('不在当前列表'), label);
+  ok('悬停解释来源', /切过关键词/.test(String(count.props.title || '')), String(count.props.title));
+}
+
 console.log('\n[4] 搜索过滤后：全选只覆盖搜索结果');
 {
   const tree = render({ query: '会话 b1' });

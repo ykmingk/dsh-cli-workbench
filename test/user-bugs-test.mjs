@@ -170,7 +170,9 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
     ok('Host 提供一键升级接口', /async selfUpgrade\(\) \{/.test(srcIndex) && /route === '\/self-upgrade'/.test(srcIndex));
   ok('只对包安装开放自动升级', /SELF_INSTALL\.kind !== 'package'/.test(srcIndex));
   ok('钉了 commit 的地址升级时去掉 commit', /replace\(\/#\.\*\$\/, ''\)/.test(srcIndex));
-  ok('升级有超时保护', /升级超时/.test(srcIndex));
+  /* 1.0.62：超时下沉到 run(command, { timeout })，不再在升级里手搓 Promise.race */
+ok('升级有超时保护', /run\(command, \{ timeout: 180000 \}\)/.test(srcIndex)
+  && /function timeoutLabel\(ms\)/.test(srcIndex) && /已终止/.test(srcIndex));
   ok('前端点按钮直接调升级接口', /api\('\/self-upgrade'/.test(srcClient));
   ok('升级后提示重启', /请重启 DSH 让新版本生效/.test(srcClient));ok('Host 按安装形态算升级命令', /function updateCommandOf\(install\)/.test(srcIndex));
   ok('自己登记的依赖 spec 从 profile 清单读', /deps\['dsh-cli-workbench'\]/.test(srcIndex));  ok('目录项不被 flex 压缩（目录一多就挤成一团）', /\.cw-diritem\{[^}]*flex: none;/.test(srcClient));

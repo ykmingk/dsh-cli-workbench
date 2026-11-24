@@ -1635,6 +1635,22 @@ class Workbench {
       this.logOperation('session.create', { id: session.id, provider, cwd, title: session.title });
       return json(res, 200, { session: this.publicSession(session), items: [], workspaces: this.workspaceList() });
     }
+    /* 立即把队首发出去：DSH 重启会打断正在跑的那一轮，队列就停在那儿了
+       （onTurnEnd 只在「一轮结束」时触发）。界面上会显示「本轮已结束」+
+       这个按钮，点一下接着发，后续几条仍由 turn-end 自动接力。 */
+    const queueDrain = route.match(/^\/sessions\/([\w.-]+)\/queue\/drain$/);
+    if (queueDrain && method === 'POST') {
+      const session = this.session(queueDrain[1]);
+      if (!session) return json(res, 404, { error: 'session not found' });
+      if (this.isBusy(session)) {
+        return json(res, 409, { error: '这一轮还在跑，队列会在结束时自动发出' });
+      }
+      const queue = this.queueList(session);
+      if (!queue.length) return json(res, 200, { ok: true, sent: false, session: this.publicSession(session) });
+      if (session.archived) return json(res, 409, { error: '这个会话已归档，取消归档后才能发送' });
+      this.onTurnEnd(session);
+      return json(res, 200, { ok: true, sent: true, session: this.publicSession(session) });
+    }
     /* 排队消息的单项操作：撤回 / 修改。单独匹配，不并进下面那个「一段动作」的
        sessionMatch——这里路径是三段（/sessions/:id/queue/:qid），正则不冲突。 */
     const queueItemMatch = route.match(/^\/sessions\/([\w.-]+)\/queue\/([\w.-]+)$/);
@@ -2772,13 +2788,9 @@ class Workbench {
     const command = 'dsh plugin --profile ' + profile + ' add ' + (/\.(tgz|tar\.gz)$/i.test(spec) ? '"' + spec + '"' : spec);
     this.selfUpgrading = true;
     try {
-      /* run() 没有超时，包慢时会把 HTTP 请求一起挂住；这里自己加一层。
-         给 3 分钟：gitcode 实测 2 秒，但网络差时要留够。 */
-      const timeout = new Promise((resolve) => {
-        const timer = setTimeout(() => resolve({ code: -2, stdout: '', stderr: '升级超时（3 分钟）' }), 180000);
-        if (typeof timer.unref === 'function') timer.unref();
-      });
-      const result = await Promise.race([run(command), timeout]);
+      /* 给 3 分钟：gitcode 实测 2 秒，但网络差时要留够。run() 现在自带超时，
+         这里只是按命令单独调大一点，超时后 killTree 会连子进程一起收掉。 */
+      const result = await run(command, { timeout: 180000 });
       const ok = result.code === 0;
       if (ok) {
         // 版本可能变了，缓存全部作废，下次查会重新读

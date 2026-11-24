@@ -1273,6 +1273,14 @@ window.__ModuleLoader__.load({
 }
 .cw-queue-insert:hover{ background: var(--cw-hover); }
 .cw-queue-insert .cw-ic{ width: 12px; height: 12px; }
+/* 队列停住时（没有正在跑的轮）：备注换成警示色，旁边给一个「立即发出」 */
+.cw-queue-note.is-idle{ color: var(--cw-danger); }
+.cw-queue-flush{
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; flex: none;
+  border: 0; border-radius: var(--cw-radius-sm); background: var(--cw-accent); color: var(--cw-on-accent);
+  font-size: var(--cw-fs-xs); cursor: pointer;
+}
+.cw-queue-flush:hover{ background: var(--cw-accent-hover); }
 .cw-queue-list{ list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .cw-queue-item{ display: flex; }
 .cw-queue-row{
@@ -3492,7 +3500,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
      * 插入是引导式的：点「插入」或条目上的「＋」，原地展开一个带占位提示的
      * 输入框，回车加入队列、Esc 取消，不用猜它会落到哪。
      */
-    function QueueCard({ queued, onWithdraw, onEdit, onInsert }) {
+    function QueueCard({ queued, onWithdraw, onEdit, onInsert, idle, onFlush }) {
       const [editing, setEditing] = useState(null); // 正在改的队列项 id
       const [draft, setDraft] = useState('');       // 编辑器正文（修改与插入共用）
       const [inserting, setInserting] = useState(false);
@@ -3577,7 +3585,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         h('div', { className: 'cw-queue-head' },
           h(Icon, { name: 'clock', size: 13 }),
           h('span', { className: 'cw-queue-title' }, '排队中 ' + queued.length + ' 条'),
-          h('span', { className: 'cw-queue-note' }, '本轮结束后逐条自动发送'),
+          /* 正常情况下「本轮结束后逐条发」；如果这一轮已经不在跑（比如 DSH 重启过），
+             队列会停在这儿没人接，得明说 + 给一个立即发出的入口。 */
+          h('span', { className: 'cw-queue-note' + (idle ? ' is-idle' : '') },
+            idle ? '当前没有正在跑的轮' : '本轮结束后逐条自动发送'),
+          idle && onFlush ? h('button', {
+            type: 'button',
+            className: 'cw-queue-flush',
+            title: '把队首这条发出去，后面的会在每轮结束时自动接力',
+            onClick: onFlush,
+          }, '立即发出') : null,
           h('button', {
             type: 'button',
             className: 'cw-queue-insert',
@@ -4559,6 +4576,14 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       const hiddenIds = allVisible.filter((session) => !shownIds.has(session.id)).map((session) => session.id);
       const hiddenSelected = hiddenIds.filter((id) => selected.has(id)).length;
       const selectedAll = allVisible.length > 0 && allVisible.every((session) => selected.has(session.id));
+      /* 勾选是跨搜索累积的：切了关键词之后，之前勾的可能已经不在当前列表里，
+         但它们仍然会被批量归档/删除。这里数出来，条上明说。 */
+      const scopedIdSet = new Set(allVisible.map((session) => session.id));
+      let outOfScope = 0;
+      for (const id of selected) if (!scopedIdSet.has(id)) outOfScope += 1;
+      const countNotes = [];
+      if (hiddenSelected) countNotes.push(hiddenSelected + ' 个未显示');
+      if (outOfScope) countNotes.push(outOfScope + ' 个不在当前列表');
       return h('aside', { className: 'cw-rail' + (batch ? ' batch' : ''), 'data-provider': provider },
         h('div', { className: 'cw-rail-head' },
           h('div', { className: 'cw-rail-title-row' },
@@ -4689,8 +4714,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         batch ? h('div', { className: 'cw-batch' },
           h('span', {
             className: 'cw-bcount',
-            title: hiddenSelected ? '其中 ' + hiddenSelected + ' 个在收起的分组或「展开剩余」里，当前看不到' : '',
-          }, '已选 ' + selected.size + ' 项' + (hiddenSelected ? '（含 ' + hiddenSelected + ' 个未显示）' : '')),
+            title: [
+              hiddenSelected ? '其中 ' + hiddenSelected + ' 个在收起的分组或「展开剩余」里，当前看不到' : '',
+              outOfScope ? '另有 ' + outOfScope + ' 个不在当前搜索/列表里（切过关键词后仍保留的勾选）' : '',
+            ].filter(Boolean).join('；'),
+          }, '已选 ' + selected.size + ' 项' + (countNotes.length ? '（含 ' + countNotes.join('、') + '）' : '')),
           h('button', {
             onClick: () => selectAll(selectedAll ? [] : selectable),
           }, selectedAll ? '取消全选' : '全选'),
@@ -6004,6 +6032,18 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         }
       };
 
+      /* 队列停住时手动接力：把队首发出去，后面的仍由每轮结束自动接。 */
+      const flushQueue = async () => {
+        try {
+          const result = await api('/sessions/' + currentId + '/queue/drain', { method: 'POST' });
+          applyQueueResult(result);
+          if (!result.sent) showToast('队列是空的');
+          refreshSessions();
+        } catch (error) {
+          showToast('发送失败：' + error.message);
+        }
+      };
+
       const archive = async (id) => {
         const session = sessions.find((item) => item.id === id);
         const result = await patchSession(id, { archived: true });
@@ -7004,6 +7044,10 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   onWithdraw: withdrawQueue,
                   onEdit: editQueue,
                   onInsert: insertQueue,
+                  /* 「没有正在跑的轮」= 队列停住了（例如 DSH 重启打断了一轮）：
+                     这时给「立即发出」，别让人对着「本轮结束后自动发送」干等。 */
+                  idle: !(viewSession.status === 'running' || viewSession.status === 'waiting'),
+                  onFlush: flushQueue,
                 })
                 : null,
               h('div', {

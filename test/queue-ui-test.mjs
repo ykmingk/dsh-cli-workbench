@@ -192,5 +192,26 @@ console.log('\n[5] 插入（插到某条之前）');
   ok('前插回调带上目标 id', inserted.length === 2 && inserted[1].text === '插到 q2 前' && inserted[1].beforeId === 'q2', JSON.stringify(inserted));
 }
 
+console.log('\n[6] 队列停住（没有正在跑的轮）');
+{
+  let flushed = 0;
+  store = [];
+  hookIndex = 0;
+  const stuck = QueueCard({ ...props, idle: true, onFlush: () => { flushed += 1; } });
+  const texts2 = (tree) => walk(tree).flatMap((node) => (node.children || []).filter((c) => typeof c === 'string'));
+  ok('备注改成「当前没有正在跑的轮」', texts2(stuck).some((text) => text === '当前没有正在跑的轮'), JSON.stringify(texts2(stuck)));
+  const flush = walk(stuck).find((node) => node.type === 'button' && (node.children || []).includes('立即发出'));
+  ok('出现「立即发出」按钮', Boolean(flush));
+  flush.props.onClick();
+  ok('点了会回调 onFlush', flushed === 1, String(flushed));
+
+  store = [];
+  hookIndex = 0;
+  const normal = QueueCard({ ...props, idle: false });
+  ok('正常态没有这个按钮、文案是老样子',
+    texts2(normal).some((text) => text === '本轮结束后逐条自动发送')
+    && !walk(normal).some((node) => node.type === 'button' && (node.children || []).includes('立即发出')));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

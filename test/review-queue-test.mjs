@@ -444,9 +444,40 @@ console.log('\n[7] 排队项：撤回 / 修改 / 插入');
   const patchGone = await request('PATCH', '/sessions/' + running.id + '/queue/nope', JSON.stringify({ text: 'x' }));
   ok('修改不存在的排队项返回 404', patchGone.status === 404, String(patchGone.status));
 
-  /* 撤回不会触发发送；队列仍在、顺序没乱 */
   ok('撤回后顺序保持', running.queued[0].text === '第一条' && running.queued[1].text === '第二条（改过）');
   ok('全程没有误发', sent.length === 0, JSON.stringify(sent));
+
+  /* 队列停住时（DSH 重启打断了一轮）：手动让队首发出去 */
+  running._turnActive = false;
+  running.status = 'idle';
+  const drain = await request('POST', '/sessions/' + running.id + '/queue/drain');
+  ok('空闲时 /queue/drain 把队首发出去', drain.status === 200 && drain.json.sent === true,
+    JSON.stringify({ status: drain.status, sent: drain.json.sent }));
+  await new Promise((r) => setTimeout(r, 20));
+  ok('发出的正是队首那条', sent[sent.length - 1] === '第一条', JSON.stringify(sent));
+  ok('队列剩一条', running.queued.length === 1 && running.queued[0].text === '第二条（改过）');
+
+  running._turnActive = true;
+  running.status = 'running';
+  const drainBusy = await request('POST', '/sessions/' + running.id + '/queue/drain');
+  ok('正在跑时 drain 返回 409', drainBusy.status === 409, String(drainBusy.status));
+  running._turnActive = false;
+  running.status = 'idle';
+
+  const emptyDrain = makeSession({ status: 'idle' });
+  wb.sessions.set(emptyDrain.id, emptyDrain);
+  const noQueue = await request('POST', '/sessions/' + emptyDrain.id + '/queue/drain');
+  ok('空队列 drain 不发、不报错', noQueue.status === 200 && noQueue.json.sent === false, JSON.stringify(noQueue.json));
+
+  const archivedSession = makeSession({
+    status: 'idle', archived: true,
+    queued: [{ id: 'q_arch', text: '归档里的', at: Date.now() }],
+  });
+  wb.sessions.set(archivedSession.id, archivedSession);
+  const archivedDrain = await request('POST', '/sessions/' + archivedSession.id + '/queue/drain');
+  ok('归档会话不自动发（409）', archivedDrain.status === 409, String(archivedDrain.status));
+
+  /* 撤回不会触发发送；队列仍在、顺序没乱 */
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
