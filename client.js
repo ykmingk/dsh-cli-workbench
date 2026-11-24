@@ -1841,11 +1841,20 @@ button.cw-pill[aria-expanded="true"]{
 .cw-filesearch-x:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-filesearch-note{ padding: 4px 2px 8px; font-size: var(--cw-fs-xs); color: var(--cw-subtle); line-height: 1.6; }
 .cw-filesearch-note.is-error{ color: var(--cw-danger); }
-/* 搜索结果右侧的相对路径：文件名已经占主位，路径用弱色补上下文 */
-.cw-filesearch-rel{
-  margin-left: auto; padding-left: 8px; min-width: 0; flex: 0 1 auto;
+/* 「N 个结果」：跟 DSH 一样在结果上方单独一行，不再每条都写一遍路径 */
+.cw-filesearch-count{ padding: 2px 6px 6px; font-size: var(--cw-fs-xs); color: var(--cw-subtle); }
+/* 同名文件才需要补充目录：弱色、可省略，绝不把文件名挤掉 */
+.cw-filesearch-dir{
+  margin-left: 6px; min-width: 0; flex: 0 1 auto;
   font-size: var(--cw-fs-micro); color: var(--cw-subtle);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+/* 文件类型徽标：20×16 的圆角小方块，等宽字体 */
+.cw-fileext{
+  flex: none; width: 22px; height: 16px; display: inline-grid; place-items: center;
+  border-radius: 4px; background: var(--cw-module); color: var(--cw-subtle);
+  font-family: var(--cw-mono, ui-monospace, Consolas, monospace);
+  font-size: 9px; line-height: 1; letter-spacing: .02em;
 }
 .cw-tree-row{ display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: var(--cw-radius-sm); font-size: var(--cw-fs-sm); line-height: var(--cw-lh-sm); color: var(--cw-subtle); }
 .cw-tree-row .cw-ic{ width: 13px; height: 13px; }
@@ -1853,7 +1862,7 @@ button.cw-pill[aria-expanded="true"]{
 .cw-tree-row.file{ cursor: pointer; }
 .cw-tree-row.file:hover{ background: var(--cw-hover); color: var(--cw-text); }
 .cw-tree-row.is-hi{ background: var(--cw-fill); color: var(--cw-text); }
-.cw-tree-row .name{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-tree-row .name{ flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cw-tree-row .new-tag{ margin-left: auto; font-size: var(--cw-fs-micro); font-weight: var(--cw-fw-medium); color: var(--cw-text); border: .5px solid var(--cw-border-3); border-radius: 4px; padding: 0 4px; }
 .cw-filetip{ margin-top: 10px; font-size: var(--cw-fs-xs); color: var(--cw-subtle); line-height: 1.6; }
 
@@ -2663,6 +2672,15 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
       );
     }
 
+    /* 文件类型小徽标（DSH 右栏搜索结果是这种「MD / TS」小方块）：
+       取扩展名前 4 个字符大写，没有扩展名就用一个点。 */
+    const extLabel = (name) => {
+      const value = String(name || '');
+      const cut = value.lastIndexOf('.');
+      if (cut <= 0 || cut === value.length - 1) return '·';
+      return value.slice(cut + 1, cut + 5).toUpperCase();
+    };
+
     /**
      * 右栏「文件」面板：文件树 + 刷新 / 搜索。
      *
@@ -2746,13 +2764,27 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         }, h(Icon, { name: 'x', size: 10 })) : null,
       ) : null;
 
-      /* 搜索态：结果列表（文件名 + 相对路径），点一行直接预览 */
+      /* 搜索态：结果列表。跟 DSH 一样只摆**文件名**（路径进 title，悬停能看全）：
+         根目录的文件相对路径就等于文件名，两边都画就是同一句话显示两遍；
+         右栏一窄，两段还会互相压。只有「同名文件出现在不同目录」时才补一段
+         弱色目录——那种情况不补就分不清点的是哪一个。 */
       if (searchOpen && query.trim()) {
         const results = found ? found.results || [] : [];
+        const seen = new Map();
+        for (const entry of results) seen.set(entry.name, (seen.get(entry.name) || 0) + 1);
+        const dirOf = (entry) => {
+          const rel = String(entry.relative || '');
+          const cut = Math.max(rel.lastIndexOf('\\'), rel.lastIndexOf('/'));
+          return cut > 0 ? rel.slice(0, cut) : '';
+        };
         return h('div', null,
           head,
           searchBar,
           searchError ? h('div', { className: 'cw-filesearch-note is-error' }, '搜索失败：' + searchError) : null,
+          !searchError && !searching && found && results.length
+            ? h('div', { className: 'cw-filesearch-count' },
+              results.length + ' 个结果' + (found.truncated ? '（已扫 ' + found.scanned + ' 项，只显示前 100 条）' : ''))
+            : null,
           !searchError && !searching && found && !results.length
             ? h('div', { className: 'cw-filesearch-note' }, '没有匹配「' + query.trim() + '」的文件。')
             : null,
@@ -2764,14 +2796,13 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                 title: entry.path,
                 onClick: () => onOpen(entry.path),
               },
-              h(Icon, { name: 'file', size: 13 }),
+              h('span', { className: 'cw-fileext', 'aria-hidden': 'true' }, extLabel(entry.name)),
               h('span', { className: 'name' }, entry.name),
               entry.isNew ? h('span', { className: 'new-tag' }, '新') : null,
-              h('span', { className: 'cw-filesearch-rel' }, entry.relative),
-              )),
-              found && found.truncated
-                ? h('div', { className: 'cw-filesearch-note' }, '结果太多（最多 100 条，已扫 ' + found.scanned + ' 项），把关键词写具体点。')
+              seen.get(entry.name) > 1 && dirOf(entry)
+                ? h('span', { className: 'cw-filesearch-dir' }, dirOf(entry))
                 : null,
+              )),
             )
             : null,
         );

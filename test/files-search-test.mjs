@@ -231,8 +231,41 @@ console.log('\n[4] 打开搜索、打字、看结果');
     JSON.stringify(requests.filter((url) => url.includes('search'))));
   ok('渲染出两条结果', byClass(tree, 'cw-tree-row').length === 2, String(byClass(tree, 'cw-tree-row').length));
   ok('结果显示文件名', texts(tree).includes('math.js') && texts(tree).includes('strings.ts'));
-  ok('结果显示相对路径', texts(tree).some((text) => text === 'src\\utils\\math.js'), JSON.stringify(texts(tree).slice(-6)));
+  ok('结果上方有「2 个结果」', texts(tree).some((text) => text === '2 个结果'), JSON.stringify(texts(tree).slice(0, 5)));
+  /* 关键回归：根目录文件的相对路径就等于文件名，以前两段都画，看着像显示了 2 遍，
+     右栏一窄还互相压。现在路径只进 title。 */
+  ok('不再把相对路径重复画一遍', !texts(tree).some((text) => text === 'src\\utils\\math.js'), JSON.stringify(texts(tree)));
+  ok('完整路径留在 title 里', byClass(tree, 'cw-tree-row').every((node) => String(node.props.title || '').includes('\\')),
+    JSON.stringify(byClass(tree, 'cw-tree-row').map((node) => node.props.title)));
+  ok('带文件类型徽标', byClass(tree, 'cw-fileext').map((node) => (node.children || [])[0]).join() === 'JS,TS',
+    JSON.stringify(byClass(tree, 'cw-fileext').map((node) => (node.children || [])[0])));
+  ok('名字唯一时不补目录', byClass(tree, 'cw-filesearch-dir').length === 0);
   ok('搜索时不再显示整棵树', !texts(tree).includes('README.md'));
+}
+
+console.log('\n[4b] 同名文件才补目录');
+{
+  /* 两个同名 index.ts 在不同目录：不补目录就分不清点哪个 */
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    const data = {
+      root: 'D:\\proj', rootName: 'proj',
+      results: [
+        { name: 'index.ts', path: 'D:\\proj\\src\\index.ts', relative: 'src\\index.ts', isNew: false },
+        { name: 'index.ts', path: 'D:\\proj\\test\\index.ts', relative: 'test\\index.ts', isNew: false },
+      ],
+      truncated: false, scanned: 9,
+    };
+    return { ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) };
+  };
+  const input = walk(tree).find((node) => node.type === 'input' && node.props['aria-label'] === '搜索文件名');
+  input.props.onChange({ target: { value: 'index' } });
+  tree = render();
+  await flush();
+  tree = render();
+  const dirs = byClass(tree, 'cw-filesearch-dir').map((node) => (node.children || [])[0]);
+  ok('同名时两行都补目录', dirs.length === 2 && dirs.includes('src') && dirs.includes('test'), JSON.stringify(dirs));
+  ok('文件名仍然只出现一次一行一个', byClass(tree, 'cw-tree-row').length === 2);
 }
 
 console.log('\n[5] 无结果 / 清空 / Esc');
