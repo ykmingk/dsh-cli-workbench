@@ -1256,12 +1256,76 @@ window.__ModuleLoader__.load({
   white-space: pre-wrap; word-break: break-word;
 }
 
-/* —— 排队提示（运行中发消息） —— */
-.cw-queued{
-  display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 6px 10px;
+/* —— 排队消息列表（运行中发消息） —— */
+.cw-queue{
+  display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding: 8px 10px;
   border-radius: var(--cw-radius-md); background: var(--cw-sub);
-  font-size: var(--cw-fs-xs); color: var(--cw-subtle);
+  border: .5px solid var(--cw-border-2);
 }
+.cw-queue-head{ display: flex; align-items: center; gap: 7px; font-size: var(--cw-fs-xs); color: var(--cw-subtle); }
+.cw-queue-head .cw-ic{ color: var(--cw-running); }
+.cw-queue-title{ color: var(--cw-text); font-weight: 600; }
+.cw-queue-note{ flex: 1; min-width: 0; }
+.cw-queue-insert{
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 9px;
+  border: 0; border-radius: var(--cw-radius-sm); background: var(--cw-bg); color: var(--cw-text);
+  font-size: var(--cw-fs-xs); box-shadow: inset 0 0 0 .5px var(--cw-border-3);
+}
+.cw-queue-insert:hover{ background: var(--cw-hover); }
+.cw-queue-insert .cw-ic{ width: 12px; height: 12px; }
+.cw-queue-list{ list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.cw-queue-item{ display: flex; }
+.cw-queue-row{
+  flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px 4px 2px;
+  border-radius: var(--cw-radius-sm);
+}
+.cw-queue-row:hover{ background: var(--cw-hover); }
+/* 这一条之前的「插入」引导：平时收着，悬停这一行才露出来，点了原地展开输入框 */
+.cw-queue-before{
+  width: 20px; height: 20px; flex: none; display: inline-grid; place-items: center; padding: 0;
+  border: 0; border-radius: 999px; background: transparent; color: var(--cw-subtle);
+  opacity: 0; transition: opacity .08s ease;
+}
+.cw-queue-row:hover .cw-queue-before{ opacity: 1; }
+.cw-queue-before:hover{ background: var(--cw-accent-soft, var(--cw-hover)); color: var(--cw-running); }
+.cw-queue-before .cw-ic{ width: 12px; height: 12px; }
+.cw-queue-no{
+  flex: none; min-width: 18px; height: 18px; display: inline-grid; place-items: center;
+  border-radius: 999px; background: var(--cw-hover); color: var(--cw-subtle);
+  font-size: var(--cw-fs-micro); font-variant-numeric: tabular-nums;
+}
+.cw-queue-text{
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--cw-fs-sm); color: var(--cw-text);
+}
+.cw-queue-ops{ flex: none; display: inline-flex; align-items: center; gap: 2px; opacity: 0; transition: opacity .08s ease; }
+.cw-queue-row:hover .cw-queue-ops{ opacity: 1; }
+.cw-queue-op{
+  width: 24px; height: 24px; display: inline-grid; place-items: center; padding: 0;
+  border: 0; border-radius: var(--cw-radius-sm); background: transparent; color: var(--cw-subtle);
+}
+.cw-queue-op:hover{ background: var(--cw-bg); color: var(--cw-text); }
+.cw-queue-op.is-danger:hover{ color: var(--cw-danger); }
+.cw-queue-op .cw-ic{ width: 12px; height: 12px; }
+/* 就地编辑 / 插入的输入行 */
+.cw-queue-edit{ flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 2px; }
+.cw-queue-input{
+  width: 100%; resize: vertical; min-height: 40px; padding: 7px 9px;
+  border: .5px solid var(--cw-border-3); border-radius: var(--cw-radius-md);
+  background: var(--cw-bg); color: var(--cw-text); font-size: var(--cw-fs-sm); line-height: 1.5;
+  outline: none;
+}
+.cw-queue-input:focus{ border-color: var(--cw-running); }
+.cw-queue-actions{ display: flex; justify-content: flex-end; gap: 6px; }
+.cw-queue-actions button{
+  height: 24px; padding: 0 10px; border: 0; border-radius: var(--cw-radius-sm);
+  background: var(--cw-bg); color: var(--cw-text); font-size: var(--cw-fs-xs);
+  box-shadow: inset 0 0 0 .5px var(--cw-border-3);
+}
+.cw-queue-actions button:hover{ background: var(--cw-hover); }
+.cw-queue-actions button.primary{ background: var(--cw-accent); color: var(--cw-on-accent); box-shadow: none; }
+.cw-queue-actions button.primary:hover{ background: var(--cw-accent-hover); }
+.cw-queue-actions button:disabled{ opacity: .55; cursor: default; }
 
 /* 空态 */
 .cw-empty{ max-width: 620px; margin: 60px auto 0; text-align: center; }
@@ -1297,6 +1361,7 @@ window.__ModuleLoader__.load({
    不再是一个写死的 720px。 */
 .cw-dock > .cw-inputbox,
 .cw-dock > .cw-stats,
+.cw-dock > .cw-queue,
 .cw-dock > .cw-todo{
   width: min(100%, clamp(712px, calc(64% + 32px), 952px));
   margin-left: auto; margin-right: auto;
@@ -3239,6 +3304,110 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             h('span', { className: 'cw-todo-text' }, todo.content),
           )),
         ) : null,
+      );
+    }
+
+    /**
+     * 排队消息列表（运行中发的消息）：和输入框同宽，逐条显示内容。
+     *
+     * 每条都能撤回（不发送）、修改（就地改成别的文字）、以及「插入」——
+     * 插入是引导式的：点「插入」或条目上的「＋」，原地展开一个带占位提示的
+     * 输入框，回车加入队列、Esc 取消，不用猜它会落到哪。
+     */
+    function QueueCard({ queued, onWithdraw, onEdit, onInsert }) {
+      const [editing, setEditing] = useState(null); // 正在改的队列项 id
+      const [draft, setDraft] = useState('');       // 编辑器正文（修改与插入共用）
+      const [inserting, setInserting] = useState(false);
+      const [insertBefore, setInsertBefore] = useState(null); // 插到哪条之前；null = 追加到末尾
+      const [busy, setBusy] = useState(false);
+
+      const cancel = () => { setEditing(null); setInserting(false); setDraft(''); setInsertBefore(null); };
+
+      const startEdit = (item) => { setInserting(false); setEditing(item.id); setDraft(item.text); };
+      const startInsert = (beforeId) => { setEditing(null); setInserting(true); setInsertBefore(beforeId); setDraft(''); };
+
+      const submitEdit = async () => {
+        if (busy) return;
+        const value = draft.trim();
+        if (!value) { cancel(); return; }
+        setBusy(true);
+        await onEdit(editing, value);
+        setBusy(false);
+        cancel();
+      };
+      const submitInsert = async () => {
+        if (busy) return;
+        const value = draft.trim();
+        if (!value) { cancel(); return; }
+        setBusy(true);
+        await onInsert(value, insertBefore);
+        setBusy(false);
+        cancel();
+      };
+
+      const editorRow = (key, placeholder, submitLabel, onSubmit) => h('li', { key, className: 'cw-queue-item is-editing' },
+        h('div', { className: 'cw-queue-edit' },
+          h('textarea', {
+            className: 'cw-queue-input',
+            value: draft,
+            rows: 2,
+            placeholder,
+            'aria-label': placeholder,
+            autoFocus: true,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.nativeEvent && event.nativeEvent.isComposing) return;
+              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
+              else if (event.key === 'Escape') cancel();
+            },
+          }),
+          h('div', { className: 'cw-queue-actions' },
+            h('button', { className: 'primary', onClick: onSubmit, disabled: busy || !draft.trim() }, submitLabel),
+            h('button', { onClick: cancel, disabled: busy }, '取消'),
+          ),
+        ),
+      );
+
+      const itemRow = (item, index) => h('li', { key: item.id, className: 'cw-queue-item' },
+        h('div', { className: 'cw-queue-row' },
+          h('button', {
+            type: 'button',
+            className: 'cw-queue-before',
+            title: '在这条之前插入',
+            'aria-label': '在这条之前插入',
+            onClick: () => startInsert(item.id),
+          }, h(Icon, { name: 'plus', size: 12 })),
+          h('span', { className: 'cw-queue-no' }, index + 1),
+          h('span', { className: 'cw-queue-text', title: item.text }, item.text),
+          h('span', { className: 'cw-queue-ops' },
+            h('button', { type: 'button', className: 'cw-queue-op', title: '修改', onClick: () => startEdit(item) }, h(Icon, { name: 'edit', size: 12 })),
+            h('button', { type: 'button', className: 'cw-queue-op is-danger', title: '撤回（不发送这条）', onClick: () => onWithdraw(item.id) }, h(Icon, { name: 'x', size: 12 })),
+          ),
+        ),
+      );
+
+      const children = [];
+      queued.forEach((item, index) => {
+        if (editing === item.id) children.push(editorRow('edit-' + item.id, '改这条排队消息…', '保存', submitEdit));
+        else if (inserting && insertBefore === item.id) children.push(editorRow('insert-' + item.id, '写一条要插到它前面的消息…', '插到这里', submitInsert));
+        else children.push(itemRow(item, index));
+      });
+      /* 追加到末尾（insertBefore === null 且没命中任何条目） */
+      if (inserting && insertBefore === null) children.push(editorRow('insert-end', '写一条要追加到末尾的消息…', '加入队列', submitInsert));
+
+      return h('div', { className: 'cw-queue' },
+        h('div', { className: 'cw-queue-head' },
+          h(Icon, { name: 'clock', size: 13 }),
+          h('span', { className: 'cw-queue-title' }, '排队中 ' + queued.length + ' 条'),
+          h('span', { className: 'cw-queue-note' }, '本轮结束后逐条自动发送'),
+          h('button', {
+            type: 'button',
+            className: 'cw-queue-insert',
+            title: '插入一条排队消息（追加到末尾）',
+            onClick: () => startInsert(null),
+          }, h(Icon, { name: 'plus', size: 12 }), '插入'),
+        ),
+        h('ul', { className: 'cw-queue-list' }, children),
       );
     }
 
@@ -5607,6 +5776,47 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         }
       };
 
+      /* 排队项操作：撤回 / 修改 / 插入。Host 回传整条 publicSession，就地更新
+         detail 与左栏，不用等下一次轮询。 */
+      const applyQueueResult = (result) => {
+        if (!result || !result.session) return;
+        setSessions((list) => mergeSession(list, result.session));
+        setDetail((current) => (current && current.session && current.session.id === result.session.id
+          ? { ...current, session: result.session }
+          : current));
+      };
+
+      const withdrawQueue = async (id) => {
+        try {
+          applyQueueResult(await api('/sessions/' + currentId + '/queue/' + id, { method: 'DELETE' }));
+        } catch (error) {
+          showToast('撤回失败：' + error.message);
+        }
+      };
+
+      const editQueue = async (id, text) => {
+        const value = String(text || '').trim();
+        if (!value) { showToast('排队内容不能为空'); return; }
+        try {
+          applyQueueResult(await api('/sessions/' + currentId + '/queue/' + id, { method: 'PATCH', body: JSON.stringify({ text: value }) }));
+        } catch (error) {
+          showToast('修改失败：' + error.message);
+        }
+      };
+
+      const insertQueue = async (text, beforeId) => {
+        const value = String(text || '').trim();
+        if (!value) { showToast('排队内容不能为空'); return; }
+        try {
+          applyQueueResult(await api('/sessions/' + currentId + '/queue', {
+            method: 'POST',
+            body: JSON.stringify({ text: value, before: beforeId || '' }),
+          }));
+        } catch (error) {
+          showToast('插入失败：' + error.message);
+        }
+      };
+
       const archive = async (id) => {
         const session = sessions.find((item) => item.id === id);
         const result = await patchSession(id, { archived: true });
@@ -6599,12 +6809,16 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
             h('div', { className: 'cw-dock' },
               /* 任务清单在输入卡上方——DSH 的 conversation.input.dock 就是这个地方 */
               viewSession && dockTodos ? h(TodoCard, { todos: dockTodos }) : null,
-              /* 排队提示：这一轮还在跑时发的消息不进对话，先在这里挂个条数，
-                 免得人以为「点了发送没反应」。 */
-              viewSession && viewSession.queued > 0 ? h('div', { className: 'cw-queued', title: '这一轮结束后会自动发出' },
-                h(Icon, { name: 'clock', size: 12 }),
-                h('span', null, '已排队 ' + viewSession.queued + ' 条，本轮结束后自动发送'),
-              ) : null,
+              /* 排队消息：和输入框同宽，逐条显示内容，可撤回/修改/插入。
+                 只有确实排了东西才占位置。 */
+              viewSession && Array.isArray(viewSession.queued) && viewSession.queued.length > 0
+                ? h(QueueCard, {
+                  queued: viewSession.queued,
+                  onWithdraw: withdrawQueue,
+                  onEdit: editQueue,
+                  onInsert: insertQueue,
+                })
+                : null,
               h('div', {
                 className: 'cw-inputbox' + (dragging ? ' is-drag' : ''),
                 /* 拖文件进来：与 DSH 的 drop 目标同一套语义，只是范围收在输入卡上 */
@@ -7078,7 +7292,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
     return {
       inject: ['slots'],
       // 预览脚本（.dev/preview.mjs）要单独渲染这些局部组件，顺手挂出来；运行时不使用。
-      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
+      __parts: { TurnRail, TodoCard, RulesDialog, ImportDialog, QueueCard, todosOf, Icon, PreviewPanel, StatsRow, RunningLine, StopGlyph },
       apply(ctx) {
                 try { layoutApi = ctx.get ? ctx.get('layout') : null; } catch { layoutApi = null; }
         try { workspaceApi = ctx.get ? ctx.get('uiWorkspace') : null; } catch { workspaceApi = null; }

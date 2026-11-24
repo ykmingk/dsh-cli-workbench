@@ -1306,8 +1306,9 @@ class Workbench {
         }
         : null,
       pendingCount: session.pendingQueue.length + (session.pending ? 1 : 0),
-      /* 运行中排队等发送的条数（纯文字，见 queueMessage） */
-      queued: Array.isArray(session.queued) ? session.queued.length : 0,
+      /* 运行中排队等发送的消息（纯文字，见 queueMessage）。整条列表下发，
+         界面要显示每条内容、支持撤回/修改/插入，只给个数不够。 */
+      queued: this.queueList(session).map((q) => ({ id: q.id, text: q.text, at: Number(q.at) || null })),
       updatedAt: session.updatedAt,
       createdAt: session.createdAt,
       itemCount: session.items.length,
@@ -1630,6 +1631,27 @@ class Workbench {
       this.logOperation('session.create', { id: session.id, provider, cwd, title: session.title });
       return json(res, 200, { session: this.publicSession(session), items: [], workspaces: this.workspaceList() });
     }
+    /* 排队消息的单项操作：撤回 / 修改。单独匹配，不并进下面那个「一段动作」的
+       sessionMatch——这里路径是三段（/sessions/:id/queue/:qid），正则不冲突。 */
+    const queueItemMatch = route.match(/^\/sessions\/([\w.-]+)\/queue\/([\w.-]+)$/);
+    if (queueItemMatch && (method === 'DELETE' || method === 'PATCH')) {
+      const session = this.session(queueItemMatch[1]);
+      if (!session) return json(res, 404, { error: 'session not found' });
+      const queueId = queueItemMatch[2];
+      if (method === 'DELETE') {
+        const removed = this.withdrawQueued(session, queueId);
+        if (!removed) return json(res, 404, { error: '这条排队消息已经不在队列里了' });
+        return json(res, 200, { ok: true, session: this.publicSession(session) });
+      }
+      const body = await readBody(req);
+      try {
+        const updated = this.editQueued(session, queueId, body.text);
+        if (!updated) return json(res, 404, { error: '这条排队消息已经不在队列里了' });
+        return json(res, 200, { ok: true, session: this.publicSession(session) });
+      } catch (error) {
+        return json(res, 400, { error: String((error && error.message) || error) });
+      }
+    }
     const sessionMatch = route.match(/^\/sessions\/([\w.-]+)(\/[a-z]+)?$/);
     if (sessionMatch) {
       const session = this.session(sessionMatch[1]);
@@ -1669,21 +1691,24 @@ class Workbench {
         return json(res, 200, { ok: true, session: this.publicSession(session) });
       }
       if (action === '/queue' && method === 'POST') {
-        /* 运行中排队：只收文字（附件不排队，理由见 queueMessage 的注释）。 */
+        /* 运行中排队：只收文字（附件不排队，理由见 queueMessage 的注释）。
+           `before` 是「插到哪条之前」的队列项 id，空着就是追加到末尾。 */
         const body = await readBody(req);
         const content = this.expandSkillTokens(text(body.text).trim(), session.cwd, session.provider);
         if (!content) return json(res, 400, { error: '没有内容可以排队' });
         if (Array.isArray(body.attachments) && body.attachments.length) {
           return json(res, 400, { error: '运行中只能排队文字；附件等这一轮结束再发' });
         }
-        /* 不在跑就直接发，别让「排队」变成一个奇怪的空队列。 */
-        if (!this.isBusy(session)) {
+        /* 不在跑就「直接发」，但只在队列本身也是空的时候才这么干——
+           队列非空意味着有轮在跑、正在排空，哪怕此刻恰好处于两次发送之间的
+           idle 窗口，也得老实插进队列，不能把新内容当普通消息直接发出去。 */
+        if (!this.isBusy(session) && this.queueList(session).length === 0) {
           await this.send(session, content, []);
           return json(res, 200, { ok: true, queued: 0, sent: true, session: this.publicSession(session) });
         }
         try {
-          const queued = this.queueMessage(session, content);
-          return json(res, 200, { ok: true, queued, sent: false, session: this.publicSession(session) });
+          const item = this.insertQueued(session, content, text(body.before || ''));
+          return json(res, 200, { ok: true, queued: this.queueList(session).length, item, sent: false, session: this.publicSession(session) });
         } catch (error) {
           return json(res, 400, { error: String((error && error.message) || error) });
         }
@@ -2088,6 +2113,12 @@ class Workbench {
     return session.status === 'running' || session.status === 'waiting' || Boolean(session._turnActive);
   }
 
+  /** 排队消息的可靠容器：老会话可能没有这个字段。 */
+  queueList(session) {
+    if (!Array.isArray(session.queued)) session.queued = [];
+    return session.queued;
+  }
+
   /**
    * 运行中排队一条消息：不打断当前轮，等这一轮结束自动发出。
    *
@@ -2099,26 +2130,64 @@ class Workbench {
    * 「排着排着文件没了」，这种情况让用户等这轮结束再发。
    */
   queueMessage(session, content) {
+    this.insertQueued(session, content, null);
+    return this.queueList(session).length;
+  }
+
+  /**
+   * 往队列里插一条（可选插到某条之前）。beforeId 为空就追加到末尾。
+   * 服务端只收纯文字：附件排队会碰上「目录被清理」的坑，见 queueMessage 注释。
+   */
+  insertQueued(session, content, beforeId) {
     const body = text(content).trim();
     if (!body) throw new Error('没有内容可以排队');
-    const queue = Array.isArray(session.queued) ? session.queued : [];
+    const queue = this.queueList(session);
     if (queue.length >= 20) throw new Error('最多排队 20 条，等这轮结束再发');
-    queue.push({ id: idOf('q'), text: body, at: now() });
-    session.queued = queue;
+    const item = { id: idOf('q'), text: body, at: now() };
+    if (beforeId) {
+      const index = queue.findIndex((q) => q && q.id === beforeId);
+      if (index >= 0) queue.splice(index, 0, item);
+      else queue.push(item);
+    } else {
+      queue.push(item);
+    }
     this.sessionEvent(session);
     this.scheduleSave();
-    return queue.length;
+    return item;
+  }
+
+  /** 撤回（删除）一条还没发出的排队消息。返回是否真的删到了。 */
+  withdrawQueued(session, queueId) {
+    const queue = this.queueList(session);
+    const index = queue.findIndex((q) => q && q.id === queueId);
+    if (index < 0) return false;
+    queue.splice(index, 1);
+    this.sessionEvent(session);
+    this.scheduleSave();
+    return true;
+  }
+
+  /** 改一条排队消息的正文。空内容不算数，找不到返回 false。 */
+  editQueued(session, queueId, content) {
+    const body = text(content).trim();
+    if (!body) throw new Error('排队内容不能为空');
+    const item = this.queueList(session).find((q) => q && q.id === queueId);
+    if (!item) return false;
+    item.text = body;
+    item.at = now(); // 改了就算「新的一条」，时间戳跟着刷新
+    this.sessionEvent(session);
+    this.scheduleSave();
+    return true;
   }
 
   /** 一轮正常结束的钩子（两个适配器都会调）：有排队就发下一条。 */
   onTurnEnd(session) {
-    const queue = Array.isArray(session.queued) ? session.queued : [];
+    const queue = this.queueList(session);
     if (!queue.length) return;
     if (this.isBusy(session)) return;
     /* 归档的会话不自动跑：归档意味着「先放着」，自动发消息会把它顶回列表。 */
     if (session.archived) return;
     const next = queue.shift();
-    session.queued = queue;
     this.sessionEvent(session);
     this.scheduleSave();
     Promise.resolve()

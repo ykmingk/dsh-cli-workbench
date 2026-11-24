@@ -278,7 +278,7 @@ console.log('\n[5] 接线');
   ok('有 /queue 路由', src.includes("action === '/queue' && method === 'POST'"));
   ok('有 /review 路由', src.includes("action === '/review' && method === 'POST'"));
   ok('附件不许排队', src.includes('运行中只能排队文字'));
-  ok('publicSession 带排队条数', src.includes('queued: Array.isArray(session.queued)'));
+  ok('publicSession 下发给整条排队列表（界面要显示/撤回/修改）', src.includes("queued: this.queueList(session).map"));
   const claudeSrc = fs.readFileSync(path.join(rootDir, 'lib/claude.js'), 'utf8');
   const codexSrc = fs.readFileSync(path.join(rootDir, 'lib/codex.js'), 'utf8');
   ok('两个适配器轮结束都会通知 Host', claudeSrc.includes('wb.onTurnEnd(session)') && codexSrc.includes('wb.onTurnEnd(session)'));
@@ -287,7 +287,11 @@ console.log('\n[5] 接线');
   ok('审查报告有独立样式', clientSrc.includes('.cw-review{') && clientSrc.includes("item.kind === 'review'"));
   ok('结论徽标读 summary', clientSrc.includes('item.summary.findings'));
   ok('运行中发送会转成排队', clientSrc.includes("'/queue'") && clientSrc.includes('已排队 '));
-  ok('输入框上方有排队提示', clientSrc.includes('cw-queued') && clientSrc.includes('本轮结束后自动发送'));
+  ok('输入框上方是排队列表（显示内容，可撤回/修改/插入）', clientSrc.includes('function QueueCard')
+    && clientSrc.includes('本轮结束后逐条自动发送')
+    && clientSrc.includes('撤回（不发送这条）')
+    && clientSrc.includes('在这条之前插入'));
+  ok('排队列表与输入框同宽', clientSrc.includes('.cw-dock > .cw-queue'));
 
 }
 
@@ -370,6 +374,79 @@ console.log('\n[6] /queue 路由');
   const immediate = await request('POST', '/sessions/' + idle.id + '/queue', JSON.stringify({ text: '直接发' }));
   ok('空闲时直接发出去', immediate.status === 200 && immediate.json.sent === true && sent.includes('直接发'), JSON.stringify(sent));
   ok('空闲时不留队列', !idle.queued || idle.queued.length === 0);
+}
+
+/* —— 7. 排队项：撤回 / 修改 / 插入 —— */
+console.log('\n[7] 排队项：撤回 / 修改 / 插入');
+{
+  const wb = makeWorkbench({
+    ctx: { webServer: { getOrigin: () => 'http://127.0.0.1:1' } },
+    attachmentsDir: path.join(os.tmpdir(), 'cw-queue-att-2'),
+    settings: { claudeMode: 'manual', codexMode: 'workspace-write' },
+  });
+  const sent = [];
+  wb.send = async (session, content) => { sent.push(content); };
+  const running = makeSession({ status: 'running', _turnActive: true });
+  wb.sessions.set(running.id, running);
+
+  class FakeReq extends EventEmitter {
+    constructor(method, url, body) {
+      super();
+      this.method = method;
+      this.url = '/cli-workbench/api' + url;
+      this.headers = {};
+      setImmediate(() => {
+        if (body != null) this.emit('data', Buffer.from(body, 'utf8'));
+        this.emit('end');
+      });
+    }
+    destroy() {}
+  }
+  const request = async (method, url, body) => {
+    const res = {
+      statusCode: 0,
+      chunks: [],
+      writeHead(status, headers) { this.statusCode = status; this.headers = headers || {}; },
+      end(payload) { if (payload != null) this.chunks.push(Buffer.from(String(payload), 'utf8')); },
+    };
+    await wb.handle(new FakeReq(method, url, body), res);
+    const raw = Buffer.concat(res.chunks).toString('utf8');
+    return { status: res.statusCode, json: raw ? JSON.parse(raw) : null };
+  };
+
+  /* 先排两条，建立基线 */
+  const a = await request('POST', '/sessions/' + running.id + '/queue', JSON.stringify({ text: '第一条' }));
+  const b = await request('POST', '/sessions/' + running.id + '/queue', JSON.stringify({ text: '第二条' }));
+  ok('排了两条', running.queued.length === 2, String(running.queued.length));
+  const qid1 = running.queued[0].id;
+  const qid2 = running.queued[1].id;
+  ok('下发的 session.queued 是数组', Array.isArray(a.json.session.queued) && a.json.session.queued.length === 1);
+
+  /* 插入：插到「第一条」之前 */
+  const ins = await request('POST', '/sessions/' + running.id + '/queue', JSON.stringify({ text: '插到最前', before: qid1 }));
+  ok('插入到指定位置', ins.status === 200 && running.queued.length === 3 && running.queued[0].text === '插到最前', JSON.stringify(running.queued.map((q) => q.text)));
+  const qidIns = running.queued[0].id;
+
+  /* 修改：改「第二条」的正文 */
+  const patch = await request('PATCH', '/sessions/' + running.id + '/queue/' + qid2, JSON.stringify({ text: '第二条（改过）' }));
+  ok('修改排队项', patch.status === 200 && running.queued.find((q) => q.id === qid2).text === '第二条（改过）', patch.json.session.queued.map((q) => q.text).join('|'));
+
+  const emptyPatch = await request('PATCH', '/sessions/' + running.id + '/queue/' + qid2, JSON.stringify({ text: '   ' }));
+  ok('改成空内容被拒（400）', emptyPatch.status === 400 && /不能为空/.test(emptyPatch.json.error), JSON.stringify(emptyPatch.json));
+
+  /* 撤回：删掉插进来的那条 */
+  const del = await request('DELETE', '/sessions/' + running.id + '/queue/' + qidIns);
+  ok('撤回排队项', del.status === 200 && running.queued.length === 2 && !running.queued.some((q) => q.id === qidIns), String(running.queued.length));
+
+  const delGone = await request('DELETE', '/sessions/' + running.id + '/queue/' + qidIns);
+  ok('撤回不存在的排队项返回 404', delGone.status === 404, String(delGone.status));
+
+  const patchGone = await request('PATCH', '/sessions/' + running.id + '/queue/nope', JSON.stringify({ text: 'x' }));
+  ok('修改不存在的排队项返回 404', patchGone.status === 404, String(patchGone.status));
+
+  /* 撤回不会触发发送；队列仍在、顺序没乱 */
+  ok('撤回后顺序保持', running.queued[0].text === '第一条' && running.queued[1].text === '第二条（改过）');
+  ok('全程没有误发', sent.length === 0, JSON.stringify(sent));
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

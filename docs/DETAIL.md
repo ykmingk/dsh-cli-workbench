@@ -254,7 +254,7 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 ### 代码审查与运行中排队
 
 - **审查**（`POST /sessions/:id/review`）：先 `git rev-parse --is-inside-work-tree` 确认目录是 git 仓库，再按助手分两条路——Codex 走 `codex review --uncommitted`（对比分支用 `--base`），Claude 由 Host 跑 `git diff` 后把 diff 塞进 `claude -p` 的 stdin（提示词明确要求「不要调用工具」，否则无人值守时会卡在审批上）。命令用 `spawn` 的 `cwd` 而不是命令里拼 `cd`（路径含空格/中文时经 cmd 解析容易出错）。Codex 分支带上和会话相同的 Windows 沙箱绕行参数（`-c windows.sandbox="..."`），**没有它 `codex review` 会把「读 git」也当成命令执行拒掉**，模型只能空转（实测 5 分钟）。报告存成 `kind: 'review'` 的记录，Codex 输出的那段 JSON 用括号配平扫描抽出来变成 `summary`（徽标），正文里去掉；报告正文上限 60KB、diff 上限 200KB、超时 10 分钟。
-- **排队**（`POST /sessions/:id/queue`）：运行中收到的消息进 `session.queued`（纯文字，最多 20 条，随会话落盘），两个适配器在 `turn-end` 时调 `wb.onTurnEnd(session)`，Host 发现队列非空且已空闲就自动发下一条。**没有用 `codex queue`**：那个队列属于交互式会话（TUI），工作台每轮是独立的 `codex exec` 进程，消息排进 CLI 的队列没人消费；排在工作台这一层两个助手行为一致。归档的会话不自动发，避免被顶回列表。附件不排队（落盘路径可能已变），直接提示等这轮结束。
+- **排队**（`POST /sessions/:id/queue`，单项操作 `DELETE/PATCH /sessions/:id/queue/:qid`）：运行中收到的消息进 `session.queued`（纯文字，最多 20 条，随会话落盘），两个适配器在 `turn-end` 时调 `wb.onTurnEnd(session)`，Host 发现队列非空且已空闲就自动发下一条。**没有用 `codex queue`**：那个队列属于交互式会话（TUI），工作台每轮是独立的 `codex exec` 进程，消息排进 CLI 的队列没人消费；排在工作台这一层两个助手行为一致。归档的会话不自动发，避免被顶回列表。附件不排队（落盘路径可能已变），直接提示等这轮结束。`publicSession.queued` 下发的是整条列表（`{id,text,at}`），不是个数；`POST /queue` 带 `before`（队列项 id）可插到指定位置，`POST` 的「空闲就立即发」只在**队列本身也空**时才触发——队列非空说明有轮在排空，哪怕恰好处在两次发送之间的 idle 窗口也得老实插进去。
 
 ### 排查日志 `operations.log`
 
