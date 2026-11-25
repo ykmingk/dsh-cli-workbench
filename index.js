@@ -820,6 +820,8 @@ class Workbench {
     this.npmCache = null;
     // 插件自身的最新版本号（缓存 1 小时，只在用户打开设置时按需查询）
     this.versionCache = null;
+    // 本机能不能解析 `dsh` 命令（「立即升级」靠它，见 hasDsh）
+    this.dshCache = null;
     // 自动升级的互斥锁：同时只允许一个在跑
     this.selfUpgrading = false;
     this.codexSandboxCache = null;
@@ -2690,6 +2692,25 @@ class Workbench {
     return value;
   }
 
+  /**
+   * 本机能不能解析 `dsh` 命令。
+   *
+   * 「立即升级」就是跑 `dsh plugin add`，靠 PATH 找命令；而 DSH 桌面版**默认不把它
+   * 写进 PATH**，要用户在「应用 → 管理 dsh 命令…」里手动装一次。没装时点按钮只会
+   * 换来一句 cmd 的「'dsh' 不是内部或外部命令」——看着像插件坏了，所以先问清楚，
+   * 界面上把按钮灰掉并说明去哪装。
+   */
+  async hasDsh() {
+    if (this.dshCache && now() - this.dshCache.at < 10 * 60 * 1000) return this.dshCache.value;
+    const result = await run(process.platform === 'win32' ? 'where dsh' : 'command -v dsh');
+    const found = result.code === 0
+      ? String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || ''
+      : '';
+    const value = { ok: Boolean(found), path: found };
+    this.dshCache = { at: now(), value };
+    return value;
+  }
+
   /** npm 是否可用（缓存 10 分钟：它只影响「查/升最新版」这一件事）。 */
   async hasNpm() {
     if (this.npmCache && now() - this.npmCache.at < 10 * 60 * 1000) return this.npmCache.ok;
@@ -2707,6 +2728,9 @@ class Workbench {
    * 只在用户打开设置时按需调用，结果缓存 1 小时——不轮询。
    */
   async pluginVersion(force) {
+    /* 「重新检测」要连 PATH 一起重问：用户可能刚装完 dsh 命令，
+       缓存还说他没装，按钮就会一直灰着。 */
+    if (force) this.dshCache = null;
     if (!force && this.versionCache && now() - this.versionCache.at < 60 * 60 * 1000) {
       return this.versionCache.value;
     }
@@ -2753,6 +2777,8 @@ class Workbench {
         spec: SELF_INSTALL.spec,
         // 可原样执行的升级命令（目录安装没有，返回空串）
         command: updateCommandOf(SELF_INSTALL),
+        // 「立即升级」要跑本机的 dsh 命令：没装时按钮灰掉，别让人白点一次
+        dsh: await this.hasDsh(),
       checkedAt: now(),
     };
     this.versionCache = { at: now(), value };
@@ -2777,6 +2803,16 @@ class Workbench {
         error: SELF_INSTALL.kind === 'link' || SELF_INSTALL.kind === 'directory'
           ? '当前是目录安装：下载新版覆盖插件目录即可，无法自动替换'
           : '认不出这个插件的安装来源，请用命令行升级',
+      };
+    }
+    /* 桌面版默认不装 dsh 命令，没装时这条命令注定失败（cmd 只会答一句
+       「'dsh' 不是内部或外部命令」）。在跑之前就说清怎么装，别把 cmd 的报错端给用户。 */
+    const dsh = await this.hasDsh();
+    if (!dsh.ok) {
+      return {
+        ok: false,
+        reason: 'no-dsh',
+        error: '这台机器还没有 dsh 命令：打开「应用 → 管理 dsh 命令…」点安装，重启 DSH 后再升级',
       };
     }
     /* 钉了 commit 的安装要去掉 #commit，否则重跑还是装回旧版本 */

@@ -236,8 +236,9 @@ Claude 会话第二行是 `Claude session_id:`。原生 id 在发出第一句话
 - **DSH**：`package.json` 声明 `engines.dsh = ">=0.2.2-rc.5 <0.3.0"`，不满足时安装/启用会被 DSH 挡下并说明原因，不会装上一个跑不起来的插件。
 - **Claude Code**：启动时核对 9 个必需参数（`--output-format`、`--input-format`、`--verbose`、`--permission-mode`、`--permission-prompts`、`--permission-prompt-tool`、`--include-partial-messages`、`--mcp-config`、`--resume`）。
 - **Codex**：核对 6 个必需参数与 3 个可选参数（`archive` / `unarchive` / `delete`，缺失只降级为软归档），并单独探测 Windows 沙箱后端。
+- **插件自身**：「立即升级」调本机的 `dsh` 命令重装本插件，要求 DSH 桌面版的 `dsh` 已在 PATH 上。桌面版**默认不装**：菜单 **应用 → 管理 dsh 命令…** → 弹窗里点 **安装**，然后**重启 DSH**（正在运行的进程继承的是旧 PATH）。没装时按钮只报一句 `'dsh' 不是内部或外部命令…`，装完再点一次即可。
 
-当前实测通过：DSH `0.2.2-rc.5`、Claude Code `2.1.330`、Codex `0.171.0`。探测在**运行时**做，参数没变的小版本升级无需改代码；缺参数时「设置 → CLI 版本与升级」标红列出缺项，打开工作台时提示一次。完整矩阵见仓库根目录的 `COMPATIBILITY.md`。
+当前实测通过：DSH `0.2.2-rc.5`、Claude Code `2.1.330`、Codex `0.171.0`。探测在**运行时**做，参数没变的小版本升级无需改代码；缺参数时「设置 → CLI 版本与升级」标红列出缺项，打开工作台时提示一次。完整矩阵、依赖的具体参数与升级后怎么复测，见 [COMPATIBILITY.md](https://gitcode.com/yk1900/dsh-cli-workbench/blob/main/COMPATIBILITY.md)。
 
 ## 数据与隐私
 

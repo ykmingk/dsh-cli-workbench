@@ -3717,6 +3717,10 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
         }
       }, []);
       useEffect(() => { checkSelf(false); }, [checkSelf]);
+      /* 「立即升级」= 跑本机的 `dsh plugin add`。DSH 桌面版默认不装这条命令，没装时
+         点按钮只会换来一句 cmd 报错，所以按钮灰掉、把「去哪装」写在下面。 */
+      const selfNoDsh = Boolean(selfVersion && selfVersion.install === 'package'
+        && selfVersion.dsh && selfVersion.dsh.ok === false);
       const sandboxState = boot && boot.providers && boot.providers.codex ? boot.providers.codex.sandbox : null;
       // 归档时间：老数据没有 archivedAt，用 updatedAt 兜底；排序也按它，别让「今天
       // 刚归档」的会话因为半个月没动过而被分到「更早」。
@@ -3828,7 +3832,7 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                       ? h('span', { title: selfVersion.error }, '读不到最新版本号')
                       : null,
                   ),
-                  h('div', { className: 'cw-upd-compat' },
+                  h('div', { className: 'cw-upd-compat' + (selfNoDsh ? ' bad' : '') },
                     selfUpgrade && selfUpgrade.phase === 'done'
                       ? (selfUpgrade.ok
                         ? '已升级到 v' + (selfVersion && selfVersion.latest ? selfVersion.latest : '') + '。请重启 DSH 让新版本生效。'
@@ -3840,6 +3844,11 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                             /* 更新手法取决于当初怎么装的——说错了用户会白折腾：
                                包安装（仓库地址 / tgz）能自动替换；目录安装只能覆盖文件。 */
                             if (selfVersion.install === 'package') {
+                              /* 没装 dsh 命令时按钮是灰的，这里必须说清去哪装——
+                                 不然用户只会反复点它，或者以为插件坏了。 */
+                              if (selfNoDsh) {
+                                return '这台机器还没装 dsh 命令：打开「应用 → 管理 dsh 命令…」点安装，重启 DSH 后再升级。';
+                              }
                               return '这个安装方式支持直接升级，点右边的按钮即可。';
                             }
                             if (selfVersion.command) {
@@ -3863,7 +3872,8 @@ a.cw-upd-btn{ display: inline-flex; align-items: center; justify-content: center
                   ? (selfVersion.install === 'package'
                     ? h('button', {
                       className: 'cw-upd-btn',
-                      disabled: selfUpgrade && selfUpgrade.phase === 'running',
+                      disabled: (selfUpgrade && selfUpgrade.phase === 'running') || selfNoDsh,
+                      title: selfNoDsh ? '先到「应用 → 管理 dsh 命令…」安装 dsh，重启 DSH 后再升级' : undefined,
                       onClick: async () => {
                         setSelfUpgrade({ phase: 'running' });
                         try {

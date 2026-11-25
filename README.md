@@ -27,12 +27,16 @@
 1. 已安装 **DSH 桌面版**（本插件要求 `engines.dsh` 在 `>=0.2.2-rc.5 <0.3.0` 之间）。
 2. 本机装有 **Git**，命令行里能运行 `git --version`（按仓库地址安装时 DSH 会先探测仓库）。
 3. 本机已安装并登录 **Claude Code**（`claude` 命令可用）或 **Codex**（`codex` 命令可用）——至少一个。
+4. **DSH 桌面版的 `dsh` 命令已装进 PATH。** 桌面版**默认不装**，要手动加一次：
+   菜单 **应用 → 管理 dsh 命令…** → 弹窗「将 Desktop 命令添加到终端」里点 **安装** → **重启 DSH**（不是刷新页面）。
+   没装的表现：工作台里的「立即升级」报 `'dsh' 不是内部或外部命令，也不是可运行的程序或批处理文件。`，手动执行 `dsh plugin add` 也一样。
+   验证方法：新开一个终端跑 `dsh --version`，能打印版本号就对了。这一步只影响**升级**，不影响工作台日常使用。
 
 两个 CLI 只装一个也能用，另一个的按钮会显示为不可用。
 
 ### 用仓库地址安装
 
-**这是唯一支持的方式。** 只有按仓库地址装，工作台里的「立即升级」按钮才能用。
+**这是唯一支持的方式。** 只有按仓库地址装，工作台里的「立即升级」按钮才能用（另外还要 `dsh` 命令在 PATH 上，见「前提」第 4 条）。
 
 ```sh
 dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-workbench.git
@@ -64,6 +68,8 @@ gitcode 不在 pnpm 的内置托管商列表里，DSH 会先用 HTTPS 探测仓�
 dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-workbench.git
 ```
 
+> **按钮报「'dsh' 不是内部或外部命令…」**：这台机器还没把 DSH 桌面版的 `dsh` 装进 PATH（桌面版默认不装），跟版本、网络、权限都无关。按上面「前提」第 4 条装一次、重启 DSH，再点「立即升级」就正常了。
+
 > **之前用其他方式装过的**：先删掉 `<profile>\node_modules\dsh-cli-workbench`，再按上面的命令装一次。
 > 旧方式会在那里留下联接点，直接覆盖会报 `ERR_PNPM_EPERM`，也无法一键升级。
 
@@ -74,6 +80,7 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 | DSH | `>=0.2.2-rc.5 <0.3.0`（由 `package.json` 的 `engines.dsh` 声明，版本不符会被直接挡下） |
 | 平台 | Windows（10/11）。插件用 `explorer.exe` 打开文件夹、用 `cmd.exe` 拉起 CLI；macOS / Linux 未适配 |
 | CLI | 本机需已安装并登录 `claude`（Claude Code）或 `codex`（Codex），至少一个 |
+| `dsh` 命令 | **升级时需要**。DSH 桌面版默认不装，「立即升级」和手动那条 `dsh plugin add` 都靠它；见「前提」第 4 条 |
 | npm | **可选**。只有「检查最新版本」和「用 npm 升级」会用到；没有 npm 时改用 CLI 自带的 `update` |
 | Git | **必需**。安装与「立即升级」都走仓库地址，DSH 会先 git ls-remote 探测 |
 
@@ -231,6 +238,8 @@ dsh plugin --profile <你的 profile> add https://gitcode.com/yk1900/dsh-cli-wor
 探测是**运行时**做的，不写死版本号：小版本升级只要参数没变就照常工作，不需要改代码。
 
 本插件开发与实测环境：**DSH 0.2.2-rc.5 / Claude Code 2.1.330 / Codex 0.171.0 / Windows 10 19045**。
+
+完整矩阵、每个版本依赖的具体参数、升级后怎么复测、不兼容时怎么表现，见同目录的 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 > macOS 与 Linux 未验证。Windows 之外的平台按 `codex doctor` 的原生结果处理，未做适配测试。
 

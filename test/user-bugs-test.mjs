@@ -166,7 +166,8 @@ console.log('\n[1.0.31] 插件自带「检查更新」（本地安装没有 DSH 
   ok('junction 用 lstat 识别为符号链接', /lstatSync\(dir\)\.isSymbolicLink\(\)/.test(srcIndex));
   ok('/version 返回安装形态', /install: SELF_INSTALL\.kind/.test(srcIndex));
   ok('目录安装才显示命令框（包安装直接点按钮）', /selfVersion\.command && selfVersion\.install !== 'package'/.test(srcClient) && /cw-upd-cmd/.test(srcClient));
-  ok('包安装提示可自动升级', /selfVersion\.install === 'package'[\s\S]{0,120}这个安装方式支持直接升级/.test(srcClient));
+  /* 1.0.63 起中间多了「没装 dsh 命令就灰按钮」那一支，窗口放宽到 400 字 */
+  ok('包安装提示可自动升级', /selfVersion\.install === 'package'[\s\S]{0,400}这个安装方式支持直接升级/.test(srcClient));
     ok('Host 提供一键升级接口', /async selfUpgrade\(\) \{/.test(srcIndex) && /route === '\/self-upgrade'/.test(srcIndex));
   ok('只对包安装开放自动升级', /SELF_INSTALL\.kind !== 'package'/.test(srcIndex));
   ok('钉了 commit 的地址升级时去掉 commit', /replace\(\/#\.\*\$\/, ''\)/.test(srcIndex));
